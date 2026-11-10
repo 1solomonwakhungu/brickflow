@@ -289,8 +289,8 @@ class TableauWrapper:
         try:
             return self._server.auth.sign_in(self._authenticator)
         except OSError:
-            # Transport failures (SSLError, ConnectionError, CrossOriginRequestError,
-            # unreadable CA bundle) carry no server response text.
+            # Preserve transport exception types for callers. These errors may
+            # contain response text; they are outside response omission.
             raise
         except Exception as exc:  # pylint: disable=broad-except
             original_type = type(exc).__name__
