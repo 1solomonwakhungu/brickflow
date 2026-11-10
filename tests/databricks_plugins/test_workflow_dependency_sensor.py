@@ -1,3 +1,4 @@
+import json
 import re
 from datetime import timedelta
 from types import SimpleNamespace
@@ -25,10 +26,12 @@ def _polling_sensor(monkeypatch):
     monkeypatch.setattr(
         workflow_dependency_sensor,
         "time",
-        SimpleNamespace(time=lambda: clock.now, sleep=sleep),
+        SimpleNamespace(
+            time=lambda: clock.now, monotonic=lambda: clock.now, sleep=sleep
+        ),
     )
     monkeypatch.setattr(workflow_dependency_sensor, "WorkspaceClient", Mock())
-    monkeypatch.setattr(workflow_dependency_sensor, "get_job_id", lambda **_: 7)
+    monkeypatch.setattr(WorkflowDependencySensor, "_lookup_job_id", lambda _self: 7)
 
     def make_sensor(pages):
         sensor = WorkflowDependencySensor(
@@ -44,13 +47,14 @@ def _polling_sensor(monkeypatch):
             sensor, "get_execution_start_time_unix_milliseconds", cutoff
         )
 
-        def get(url, *, params, headers):
+        def get(url, *, params, headers, **_request_options):
             assert url == "https://synthetic.invalid/api/2.1/jobs/runs/list"
             assert headers["Authorization"] == "Bearer synthetic-token"
             # Snapshot before the next page mutates the shared request dictionary.
             request_params.append(params.copy())
             page = pages.get((clock.now, params.get("page_token")), {"runs": []})
-            return Mock(json=Mock(return_value=page))
+            body = json.dumps(page).encode()
+            return Mock(iter_content=Mock(return_value=iter([body])))
 
         session = Mock(get=Mock(side_effect=get))
         monkeypatch.setattr(sensor, "get_http_session", lambda: session)
@@ -144,8 +148,9 @@ def test_empty_pages_still_time_out(polling_sensor, page_count):
     with pytest.raises(WorkflowDependencySensorTimeOutException):
         sensor.execute()
 
-    assert_request_params(request_params, tokens * 4)
-    assert clock.sleeps == [1, 1, 1]
+    # Polls at t=0, 1 and 2 (the deadline); no sleep or poll past the deadline.
+    assert_request_params(request_params, tokens * 3)
+    assert clock.sleeps == [1, 1]
     cutoff.assert_called_once_with()
 
 
