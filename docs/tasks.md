@@ -822,6 +822,8 @@ def airflow_external_task_dependency_sensor():
             url="https://proxy.../.../cluster_id/",
             version="2.0.2",  # "1.x" -> /api/experimental, "3.x" -> /api/v2
             token=token,
+            # Optional: CA bundle for a server certificate issued by a private CA.
+            # ca_bundle="/dbfs/FileStore/certs/internal-ca.pem",
         ),
         allowed_states=["success"],
         execution_delta=timedelta(hours=-2),
@@ -859,9 +861,26 @@ def autosys_sensor():
         job_name="my_upstream_job",
         poke_interval=60,
         time_delta=timedelta(hours=1),
+        # Optional: CA bundle for a server certificate issued by a private CA.
+        # ca_bundle="/dbfs/FileStore/certs/internal-ca.pem",
     )
     sensor.poke()
 ```
+
+#### TLS certificate verification
+
+`AirflowCluster`, `AutosysSensor`, and the Tableau refresh operators verify
+certificates for HTTPS connections. Configure HTTPS endpoints: plaintext HTTP
+URLs remain accepted and provide no TLS protection. If a server uses a private
+certificate authority, pass a PEM CA bundle or OpenSSL hashed certificate
+directory with `ca_bundle`, or set `REQUESTS_CA_BUNDLE` on the cluster.
+The connector options do not expose a verification bypass. An untrusted HTTPS
+certificate raises `requests.exceptions.SSLError` before HTTP credentials are
+sent to that peer; an invalid CA path can instead raise `OSError`.
+
+Certificate verification does not restrict redirect destinations. In particular,
+the Tableau client may forward sign-in credentials to a redirected endpoint.
+Use trusted endpoints with controlled redirects.
 
 #### Workflow Dependency Sensor
 
@@ -1058,6 +1077,11 @@ Data source 'my-datasource' refresh status:
 
 If refresh fails, `job_status_details` will contain the error message retrieved from the server and the operator will
 fail. If fail behavior is not desired, `fail_operator = False` can be set in the operator parameters.
+
+Tableau HTTPS certificates are verified; pass `ca_bundle` for a private certificate authority
+(see [TLS certificate verification](#tls-certificate-verification)). The password field is masked in the
+wrapper option log and text representations. Server error messages are propagated and may contain
+sensitive response text; this masking does not sanitize those errors.
 
 ```python title="tableau_refresh_operators"
 from brickflow.context import ctx
