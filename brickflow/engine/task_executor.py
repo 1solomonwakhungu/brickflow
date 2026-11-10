@@ -12,7 +12,7 @@ from urllib.parse import urljoin, urlsplit, urlunsplit
 import requests
 from jinja2 import Template
 from brickflow import _ilog as log
-from brickflow.engine.task_injection_config import TaskDefinition
+from brickflow.engine.task_injection_config import TaskDefinition, validate_task_name
 
 _REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 _DEFAULT_PORTS = {"http": 80, "https": 443}
@@ -350,6 +350,9 @@ class ArtifactoryClient:
 class GenericTaskExecutor:
     """Executor for generic injected tasks with template support."""
 
+    NOTEBOOKS_DIR = "_brickflow_injected_notebooks"
+    """Directory, relative to the working directory, for generated notebooks."""
+
     DEFAULT_TEMPLATE_PATH = (
         Path(__file__).parent.parent / "templates" / "injected_task_default.py.j2"
     )
@@ -473,12 +476,13 @@ class GenericTaskExecutor:
         Returns:
             Relative path to generated notebook for NOTEBOOK_TASK reference
         """
+        # Validate before rendering so no work is done for an unusable name.
+        task_name = validate_task_name(self.task_def.task_name)
+
         # Render template once
         rendered_code = self._load_and_render_template(self.task_def)
 
-        # Create notebooks directory
-        notebooks_dir = Path("_brickflow_injected_notebooks")
-        notebooks_dir.mkdir(parents=True, exist_ok=True)
+        notebooks_dir = self._prepare_notebooks_dir()
 
         # Add Databricks notebook header
         # This magic comment is required for Databricks to recognize .py files as notebooks
@@ -486,10 +490,38 @@ class GenericTaskExecutor:
 
         # Write as Python notebook (.py format)
         # Databricks recognizes .py files as notebooks when source=WORKSPACE
-        notebook_file = notebooks_dir / f"{self.task_def.task_name}.py"
-        notebook_file.write_text(notebook_content, encoding="utf-8")
+        notebook_file = notebooks_dir / f"{task_name}.py"
+        if notebook_file.is_dir() and not notebook_file.is_symlink():
+            raise ValueError(f"Notebook output path is a directory: {notebook_file}")
+        # Atomic replace: an existing file or symlink at notebook_file is
+        # replaced, never written through.
+        _write_atomically(notebook_file, [notebook_content.encode("utf-8")], 0o666)
 
         log.info("Generated notebook: %s", notebook_file)
 
         # Return workspace-relative path for NOTEBOOK_TASK reference
-        return f"_brickflow_injected_notebooks/{self.task_def.task_name}.py"
+        return f"{self.NOTEBOOKS_DIR}/{task_name}.py"
+
+    @classmethod
+    def _prepare_notebooks_dir(cls) -> Path:
+        """
+        Create the notebooks directory in the current working directory.
+
+        Raises:
+            ValueError: if the directory is a symlink or otherwise resolves
+                outside the current working directory.
+        """
+        notebooks_dir = Path(cls.NOTEBOOKS_DIR)
+        expected = Path.cwd().resolve() / cls.NOTEBOOKS_DIR
+        if not notebooks_dir.is_symlink():
+            notebooks_dir.mkdir(exist_ok=True)
+        if (
+            notebooks_dir.is_symlink()
+            or not notebooks_dir.is_dir()
+            or notebooks_dir.resolve() != expected
+        ):
+            raise ValueError(
+                f"Refusing to write injected notebooks: {cls.NOTEBOOKS_DIR} must be "
+                f"a real directory inside {Path.cwd()}"
+            )
+        return notebooks_dir
