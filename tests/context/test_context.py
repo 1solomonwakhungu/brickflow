@@ -19,7 +19,8 @@ from brickflow.context import (
     BrickflowBuiltInTaskVariables,
 )
 from brickflow.context.context import ContextMode
-from brickflow import BrickflowEnvVars
+from brickflow import BrickflowEnvVars, Workflow
+from brickflow.cli.configure import bind_env_var
 
 
 def reset_ctx(f):
@@ -271,6 +272,71 @@ class TestContext:
 
         result = ctx.get_project_parameter("k1")
         assert result is None
+
+    @pytest.mark.parametrize(
+        "parameters,key,expected",
+        [
+            ("predicate=status=active", "predicate", "status=active"),
+            ("expression=a=b=c", "expression", "a=b=c"),
+            ("value==", "value", "="),
+            ("value=", "value", ""),
+            ("mode=full", "mode", "full"),
+            ("mode=old,mode=new=value", "mode", "new=value"),
+            (" spaced = x=y ", " spaced ", " x=y "),
+        ],
+    )
+    @patch("brickflow.context.ctx._dbutils")
+    def test_get_project_parameter_value(
+        self, dbutils: Mock, parameters: str, key: str, expected: str
+    ):
+        dbutils.widgets.get.return_value = parameters
+
+        assert ctx.get_project_parameter(key, "fallback") == expected
+
+    @pytest.mark.parametrize(
+        "parameters,key",
+        [
+            ("mode=full", "missing"),
+            ("", "mode"),
+            ("malformed,mode=full", "mode"),
+            ("mode=full,malformed", "mode"),
+            ("mode=full,", "mode"),
+            ("columns=id,name,mode=full", "columns"),
+            ("columns=id,name,mode=full", "mode"),
+        ],
+    )
+    @patch("brickflow.context.ctx._dbutils")
+    def test_get_project_parameter_preserves_fallback(
+        self, dbutils: Mock, parameters: str, key: str
+    ):
+        dbutils.widgets.get.return_value = parameters
+
+        assert ctx.get_project_parameter(key) is None
+        assert ctx.get_project_parameter(key, "fallback") == "fallback"
+
+    @patch("brickflow.context.ctx._dbutils")
+    def test_project_parameter_cli_task_runtime_round_trip(
+        self, dbutils: Mock, monkeypatch: pytest.MonkeyPatch
+    ):
+        env_var = BrickflowEnvVars.BRICKFLOW_PROJECT_PARAMS.value
+        monkeypatch.setenv(env_var, "")
+        bind_env_var(env_var)(
+            None, "key-value", ("predicate=status=active", "mode=full")
+        )
+        workflow = Workflow("parameter_round_trip")
+
+        @workflow.task
+        def parameter_task():
+            pass
+
+        task_parameters = workflow.get_task(
+            parameter_task.__name__
+        ).custom_task_parameters
+        assert task_parameters[env_var.lower()] == "predicate=status=active,mode=full"
+        dbutils.widgets.get.side_effect = task_parameters.__getitem__
+
+        assert ctx.get_project_parameter("predicate") == "status=active"
+        assert ctx.get_project_parameter("mode") == "full"
 
     @pytest.mark.parametrize(
         "value,expected_value,string_serialization",
