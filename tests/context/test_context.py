@@ -38,13 +38,33 @@ def fake_task():
 
 class TestContext:
     def test_brickflow_task_comms_obj(self):
+        from brickflow.context.context import (
+            LegacyPickleTaskValueError,
+            LegacyPickleTaskValueWarning,
+        )
+
         task_value = "hello-world"
         hidden_comms_obj = BrickflowTaskComsObject._TaskComsObject(task_value)
         b64_data = base64.b64encode(pickle.dumps(hidden_comms_obj)).decode("utf-8")
         comms_obj = BrickflowTaskComsObject(task_value)
-        assert comms_obj.to_encoded_value == b64_data
+        assert comms_obj.to_encoded_value == (
+            '{"__brickflow_task_value__":1,"value":"hello-world"}'
+        )
         assert comms_obj.value == task_value
-        assert BrickflowTaskComsObject.from_encoded_value(b64_data).value == task_value
+        assert (
+            BrickflowTaskComsObject.from_encoded_value(comms_obj.to_encoded_value).value
+            == task_value
+        )
+        # legacy pickle+base64 values are refused unless explicitly enabled
+        with pytest.raises(LegacyPickleTaskValueError):
+            BrickflowTaskComsObject.from_encoded_value(b64_data)
+        with pytest.warns(LegacyPickleTaskValueWarning):
+            assert (
+                BrickflowTaskComsObject.from_encoded_value(
+                    b64_data, legacy_pickle="read"
+                ).value
+                == task_value
+            )
         assert (
             BrickflowTaskComsObject.from_encoded_value(task_value).value == task_value
         )
@@ -185,11 +205,16 @@ class TestContext:
         sys.modules["IPython"] = ipython_mock
         sys.modules["pyspark.dbutils"] = pyspark_dbutils
         sys.modules["pyspark.dbutils.DBUtils"] = dbutils_class_mock
-        assert ctx._configure_dbutils() == ContextMode.databricks
-        sys.modules.pop("pyspark")
-        sys.modules.pop("IPython")
-        sys.modules.pop("pyspark.dbutils")
-        sys.modules.pop("pyspark.dbutils.DBUtils")
+        original_dbutils = ctx._dbutils
+        try:
+            assert ctx._configure_dbutils() == ContextMode.databricks
+        finally:
+            # do not leak the mocked dbutils into the ctx singleton used by later tests
+            ctx._dbutils = original_dbutils
+            sys.modules.pop("pyspark")
+            sys.modules.pop("IPython")
+            sys.modules.pop("pyspark.dbutils")
+            sys.modules.pop("pyspark.dbutils.DBUtils")
 
     def test_configure_spark(self):
         spark_mock = Mock()
