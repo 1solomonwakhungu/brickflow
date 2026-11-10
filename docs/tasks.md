@@ -954,6 +954,14 @@ As databricks secrets is a key value store, code expects the secret scope to con
 - `database` : default database that we want to connect for ex: sample_database  
 - `role`     : role to which the user has write access for ex: sample_write_role
 
+The operator keeps the Snowflake connector's OCSP certificate revocation
+check on in fail-open mode on every supported connector release (connector
+4.8 otherwise turns it off). On Python 3.9 the `snowflake` extra installs
+connector 3.18.x, which still writes some session secrets to DEBUG-level
+connector logs (GHSA-qqj6-54q6-cxv6); do not enable DEBUG logging for
+`snowflake.connector` on Python 3.9 jobs, or run them on Python 3.10+. See
+[Dependency security](dependency-security.md#snowflake-extra).
+
 SnowflakeOperator can accept the following as inputs
 
 - `secret_scope` : **(required)** databricks secret scope identifier

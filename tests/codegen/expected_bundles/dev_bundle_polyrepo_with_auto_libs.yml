@@ -37,6 +37,12 @@ targets:
                     package: snowflake==1.5.1
                     repo: null
                 - pypi:
+                    package: snowflake-connector-python==3.18.1; python_version < "3.10"
+                    repo: null
+                - pypi:
+                    package: snowflake-connector-python==4.8.0; python_version >= "3.10"
+                    repo: null
+                - pypi:
                     package: tableauserverclient==0.25; python_version < "3.10"
                     repo: null
                 - pypi:
