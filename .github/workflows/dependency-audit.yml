@@ -1,0 +1,138 @@
+name: dependency-audit
+
+# Group-aware advisory audit and installed-version checks.
+# See docs/dependency-security.md.
+
+on:
+  pull_request:
+    paths:
+      - pyproject.toml
+      - poetry.lock
+      - tools/dependency_audit.py
+      - tools/dependency_audit_policy.toml
+      - tests/test_dependency_audit.py
+      - .github/workflows/dependency-audit.yml
+  push:
+    branches: [ main ]
+  schedule:
+    # Weekly, so new advisories surface without waiting for a dependency change.
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dependency-audit-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  advisories:
+    name: Lockfile advisories
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    container:
+      image: python:3.12@sha256:cad37dd20c7cac861af9003af8796d03ea7a998ec1e3a664429740fc9d7d2691
+      options: --user 1001
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install audit requirements
+        run: |
+          python -m venv /tmp/audit
+          echo "packaging==24.2 --hash=sha256:09abb1bccd265c01f4a3aa3f7a7db064b36514d2cba19a2f694fe6150451a759" > /tmp/audit-requirements.txt
+          /tmp/audit/bin/python -m pip install --no-deps --require-hashes -r /tmp/audit-requirements.txt
+
+      # Exit 1: policy violation. Exit 2: the advisory lookup did not complete;
+      # that is a failure too, never a pass.
+      - name: Audit lockfile against OSV
+        run: |
+          /tmp/audit/bin/python -I tools/dependency_audit.py audit \
+            --strict-exceptions \
+            --timeout 20 --deadline 240 \
+            --json-report dependency-audit.json
+
+      - name: Upload audit report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dependency-audit-report
+          path: dependency-audit.json
+          if-no-files-found: warn
+          retention-days: 30
+
+  environments:
+    name: Installed versions (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    container:
+      image: ${{ matrix.image }}
+      options: --user 1001
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: [ '3.9', '3.10', '3.11', '3.12' ]
+        include:
+          - python-version: '3.9'
+            image: python:3.9@sha256:da5aee29682d12a6649f51c8d6f15b87deb3e6c524b923c41d0cb3304d07c913
+          - python-version: '3.10'
+            image: python:3.10@sha256:c10791e6f69086d5216f7b5d3b839929c454e24305867ed9bc5152f0355b5423
+          - python-version: '3.11'
+            image: python:3.11@sha256:731670a425deabbc48d39f0ee3115cfa665b2a4002c19939ad3e88b2832b4549
+          - python-version: '3.12'
+            image: python:3.12@sha256:cad37dd20c7cac861af9003af8796d03ea7a998ec1e3a664429740fc9d7d2691
+    env:
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      PYTHON_KEYRING_BACKEND: keyring.backends.null.Keyring
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # poetry-dynamic-versioning needs tags to build the package
+          persist-credentials: false
+
+      - name: Install Poetry
+        run: |
+          python -m venv /tmp/poetry
+          /tmp/poetry/bin/python -m pip install "poetry==1.8.5"
+
+      - name: Check lockfile matches pyproject.toml
+        run: /tmp/poetry/bin/poetry check --lock
+
+      - name: Install locked development environment
+        run: /tmp/poetry/bin/poetry install --all-extras --with dev --no-root --no-interaction
+
+      # Confirms the audit's reachability model matches what Poetry installed,
+      # and that the security floors hold in the locked environment.
+      - name: Check locked environment
+        run: |
+          PY="$(/tmp/poetry/bin/poetry env info --executable)"
+          "$PY" -I tools/dependency_audit.py installed \
+            --require certifi \
+            --expect-lock \
+            --scope runtime --scope group:dev \
+            --scope extra:all-plugins --scope extra:box --scope extra:cerberus \
+            --scope extra:snowflake --scope extra:tableau \
+            --python-executable "$PY"
+
+      - name: Dependency and plugin tests
+        run: |
+          /tmp/poetry/bin/poetry run python -m pytest -q \
+            tests/test_dependency_audit.py \
+            "tests/test_plugins.py::TestBrickflowPlugins::test_plugins_dependency_versions" \
+            tests/databricks_plugins
+
+      # What a user gets from `pip install brickflows[...]`, resolved from PyPI
+      # rather than the lockfile.
+      - name: Check consumer installs
+        run: |
+          PY="$(/tmp/poetry/bin/poetry env info --executable)"
+          for target in "." ".[tableau]" ".[all-plugins]"; do
+            rm -rf /tmp/consumer
+            python -m venv /tmp/consumer
+            /tmp/consumer/bin/python -m pip install --quiet "$target"
+            echo "== pip install $target"
+            "$PY" -I tools/dependency_audit.py installed --require certifi \
+              --python-executable /tmp/consumer/bin/python
+          done
