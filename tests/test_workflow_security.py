@@ -1,12 +1,14 @@
 """Static checks for the GitHub Actions workflows and Dependabot configuration.
 
-These tests read the YAML files only. They issue no credentials, contact no
-service, and run the publication readiness script against local samples.
+Most tests read the YAML files only. The publication readiness step is also
+executed as written, under bash, with a local mock ``gh`` that records each
+call and serves canned API responses. No credential is used and no network
+service is contacted.
 """
 
 import json
-import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -317,9 +319,15 @@ def test_readiness_job_runs_only_for_releases_with_read_access() -> None:
     readiness = _build_jobs()["publication-readiness"]
     assert readiness["if"] == "github.event_name == 'release'"
     assert readiness["permissions"] == {"actions": "read"}
+    assert readiness["timeout-minutes"] == 5
     assert "secrets." not in json.dumps(readiness)
-    check = _readiness_step()
-    assert check["env"]["EXPECTED_REPOSITORY"] == PUBLISHING_REPOSITORY
+    assert [step["name"] for step in _steps(readiness)] == [
+        "Check publication readiness"
+    ]
+    env = _readiness_step()["env"]
+    assert env["EXPECTED_REPOSITORY"] == PUBLISHING_REPOSITORY
+    assert env["EXPECTED_TAG_RULE"] == "v*"
+    assert env["GH_TOKEN"] == "${{ github.token }}"
 
 
 def test_trigger_set_is_unchanged() -> None:
@@ -331,6 +339,84 @@ def test_trigger_set_is_unchanged() -> None:
     }
 
 
+# The readiness step is executed as written in the workflow: its ``run``
+# script runs under bash with the step's own ``env`` (expressions replaced by
+# test values), and ``gh`` is a local mock that records every invocation and
+# serves canned responses. Nothing contacts GitHub.
+
+ENV_ENDPOINT = f"repos/{PUBLISHING_REPOSITORY}/environments/pypi"
+RULES_ENDPOINT = f"{ENV_ENDPOINT}/deployment-branch-policies"
+GH_PREFIX = [
+    "api",
+    "--method",
+    "GET",
+    "-H",
+    "Accept: application/vnd.github+json",
+    "-H",
+    "X-GitHub-Api-Version: 2022-11-28",
+]
+MOCK_TOKEN = "mock-workflow-token"
+
+MOCK_GH = """
+import json
+import os
+import sys
+import time
+
+args = sys.argv[1:]
+with open(os.environ["MOCK_GH_LOG"], "a", encoding="utf-8") as log:
+    log.write(json.dumps({
+        "args": args,
+        "token": os.environ.get("GH_TOKEN"),
+        "prompt_disabled": os.environ.get("GH_PROMPT_DISABLED"),
+    }) + "\\n")
+with open(os.environ["MOCK_GH_CONFIG"], encoding="utf-8") as handle:
+    responses = json.load(handle)
+missing = {
+    "status": 1,
+    "stdout": '{"message": "Not Found", "status": "404"}',
+    "stderr": "gh: Not Found (HTTP 404)",
+}
+response = responses.get(args[-1] if args else "", missing)
+time.sleep(response.get("sleep", 0))
+sys.stdout.write(response.get("stdout", ""))
+sys.stderr.write(response.get("stderr", ""))
+sys.exit(response.get("status", 0))
+"""
+
+READY_ENVIRONMENT: Dict[str, Any] = {
+    "id": 1,
+    "name": "pypi",
+    "protection_rules": [
+        {
+            "id": 10,
+            "type": "required_reviewers",
+            "prevent_self_review": True,
+            "reviewers": [
+                {"type": "User", "reviewer": {"id": 101, "login": "maintainer"}},
+                {"type": "Team", "reviewer": {"id": 202, "slug": "release"}},
+            ],
+        },
+        {"id": 11, "type": "branch_policy"},
+    ],
+    "deployment_branch_policy": {
+        "protected_branches": False,
+        "custom_branch_policies": True,
+    },
+}
+
+READY_CONTEXT = {
+    "github.token": MOCK_TOKEN,
+    "github.repository": PUBLISHING_REPOSITORY,
+    "github.event_name": "release",
+    "github.event.action": "published",
+    "github.ref": "refs/tags/v2.1.0",
+    "vars.PYPI_TRUSTED_PUBLISHING": "ready",
+}
+
+_EXPRESSION = re.compile(r"^\$\{\{ ([A-Za-z0-9_.]+) \}\}$")
+
+
 def _readiness_step() -> Dict[str, Any]:
     steps = _steps(_build_jobs()["publication-readiness"])
     matches = [
@@ -340,106 +426,531 @@ def _readiness_step() -> Dict[str, Any]:
     return matches[0]
 
 
-def _readiness_script() -> str:
-    run = _readiness_step()["run"]
-    match = re.search(r"<<'PY'\n(.*?)^PY$", run, re.S | re.M)
-    assert match, "readiness script heredoc not found"
-    return match.group(1)
+def _rule(name: str, kind: str = "tag", rule_id: int = 1) -> Dict[str, Any]:
+    return {"id": rule_id, "node_id": f"node{rule_id}", "name": name, "type": kind}
 
 
-READY_ENVIRONMENT: Dict[str, Any] = {
-    "name": "pypi",
-    "protection_rules": [
+def _rules_page(page: int) -> str:
+    return f"{RULES_ENDPOINT}?per_page=100&page={page}"
+
+
+def _ok(body: Any) -> Dict[str, Any]:
+    return {"status": 0, "stdout": body if isinstance(body, str) else json.dumps(body)}
+
+
+def _rules_body(rules: List[Dict[str, Any]], total: Optional[int] = None) -> Any:
+    return {
+        "total_count": len(rules) if total is None else total,
+        "branch_policies": rules,
+    }
+
+
+def _ready_responses(**changes: Any) -> Dict[str, Any]:
+    responses: Dict[str, Any] = {
+        ENV_ENDPOINT: _ok(READY_ENVIRONMENT),
+        _rules_page(1): _ok(_rules_body([_rule("v*")])),
+    }
+    responses.update(changes)
+    return responses
+
+
+def _step_env(context: Dict[str, str]) -> Dict[str, str]:
+    env = {}
+    for key, value in _readiness_step()["env"].items():
+        text = str(value)
+        expression = _EXPRESSION.match(text)
+        if expression:
+            env[key] = context[expression.group(1)]
+        else:
+            assert "${{" not in text, (key, text)
+            env[key] = text
+    return env
+
+
+class ReadinessRun:
+    def __init__(self, result: "subprocess.CompletedProcess[str]", log: Path) -> None:
+        self.returncode = result.returncode
+        self.output = result.stdout + result.stderr
+        records = log.read_text().splitlines() if log.exists() else []
+        self.records = [json.loads(line) for line in records]
+        self.endpoints = [record["args"][-1] for record in self.records]
+
+
+def _run_step(
+    tmp_path: Path,
+    responses: Dict[str, Any],
+    context: Optional[Dict[str, str]] = None,
+    env_overrides: Optional[Dict[str, str]] = None,
+    with_gh: bool = True,
+) -> ReadinessRun:
+    bin_dir = tmp_path / "bin"
+    for directory in ("bin", "home", "tmp", "runner"):
+        (tmp_path / directory).mkdir()
+    python = bin_dir / "python3"
+    python.write_text(f'#!/bin/sh\nexec "{sys.executable}" "$@"\n')
+    python.chmod(0o755)
+    if with_gh:
+        mock = tmp_path / "mock_gh.py"
+        mock.write_text(MOCK_GH)
+        gh = bin_dir / "gh"
+        gh.write_text(f'#!/bin/sh\nexec "{sys.executable}" -I "{mock}" "$@"\n')
+        gh.chmod(0o755)
+    config = tmp_path / "responses.json"
+    config.write_text(json.dumps(responses))
+    log = tmp_path / "gh-calls.jsonl"
+    script = tmp_path / "step.sh"
+    script.write_text(_readiness_step()["run"])
+
+    env = _step_env(dict(READY_CONTEXT, **(context or {})))
+    env.update(env_overrides or {})
+    env.update(
         {
-            "type": "required_reviewers",
-            "prevent_self_review": True,
-            "reviewers": [{"type": "User"}],
-        },
-        {"type": "branch_policy"},
-    ],
-    "deployment_branch_policy": {
-        "protected_branches": False,
-        "custom_branch_policies": True,
-    },
-}
-
-READY_ENV_VARS = {
-    "EXPECTED_REPOSITORY": PUBLISHING_REPOSITORY,
-    "REPOSITORY": PUBLISHING_REPOSITORY,
-    "EVENT_NAME": "release",
-    "EVENT_ACTION": "published",
-    "GIT_REF": "refs/tags/v2.1.0",
-    "READINESS_FLAG": "ready",
-}
-
-
-def _run_readiness(
-    tmp_path: Path, overrides: Dict[str, str], environment: Optional[Any]
-) -> "subprocess.CompletedProcess[str]":
-    response = tmp_path / "pypi-environment.json"
-    if environment is not None:
-        response.write_text(
-            environment if isinstance(environment, str) else json.dumps(environment)
-        )
-    env = {"PATH": os.environ.get("PATH", ""), "HOME": str(tmp_path)}
-    env.update(READY_ENV_VARS)
-    env.update(overrides)
-    return subprocess.run(
-        [sys.executable, "-I", "-", str(response)],
-        input=_readiness_script(),
+            "PATH": f"{bin_dir}:/usr/bin:/bin",
+            "HOME": str(tmp_path / "home"),
+            "TMPDIR": str(tmp_path / "tmp"),
+            "RUNNER_TEMP": str(tmp_path / "runner"),
+            "MOCK_GH_CONFIG": str(config),
+            "MOCK_GH_LOG": str(log),
+        }
+    )
+    # GitHub runs bash steps as: bash --noprofile --norc -eo pipefail {0}
+    result = subprocess.run(
+        ["/bin/bash", "--noprofile", "--norc", "-eo", "pipefail", str(script)],
         env=env,
         cwd=str(tmp_path),
         capture_output=True,
         text=True,
-        timeout=60,
+        timeout=120,
         check=False,
     )
+    return ReadinessRun(result, log)
 
 
-def test_readiness_passes_only_when_everything_is_verified(tmp_path: Path) -> None:
-    result = _run_readiness(tmp_path, {}, READY_ENVIRONMENT)
-    assert result.returncode == 0, result.stdout + result.stderr
+def _assert_not_ready(run: ReadinessRun, reason: str) -> None:
+    assert run.returncode == 1, run.output
+    assert "nothing will be uploaded" in run.output
+    assert reason in run.output, run.output
+
+
+def test_readiness_step_passes_with_verified_settings(tmp_path: Path) -> None:
+    run = _run_step(tmp_path, _ready_responses())
+    assert run.returncode == 0, run.output
+    assert "All publication prerequisites" in run.output
+    assert [record["args"] for record in run.records] == [
+        GH_PREFIX + [ENV_ENDPOINT],
+        GH_PREFIX + [_rules_page(1)],
+    ]
+    for record in run.records:
+        # The token reaches gh through the environment, never the command line.
+        assert record["token"] == MOCK_TOKEN
+        assert record["prompt_disabled"] == "1"
+        assert MOCK_TOKEN not in json.dumps(record["args"])
 
 
 @pytest.mark.parametrize(
-    "overrides, environment, reason",
+    "tag", ["v2.1.0", "v0.0.1", "v10.20.30", "v2.1.0rc1", "v3.0.0a0"]
+)
+def test_readiness_accepts_release_tags(tmp_path: Path, tag: str) -> None:
+    run = _run_step(tmp_path, _ready_responses(), {"github.ref": f"refs/tags/{tag}"})
+    assert run.returncode == 0, run.output
+
+
+@pytest.mark.parametrize(
+    "ref, reason",
+    [
+        ("refs/heads/main", "the release ref is not a tag"),
+        ("refs/tags/2.1.0", "is not a release tag"),
+        ("refs/tags/v2.1", "is not a release tag"),
+        ("refs/tags/v2.1.0-dirty", "is not a release tag"),
+        ("refs/tags/v02.1.0", "is not a release tag"),
+        ("refs/tags/v2.1.0.post1", "is not a release tag"),
+        ("refs/tags/v2.1.0rc", "is not a release tag"),
+        ("refs/tags/unreviewed", "is not a release tag"),
+        ("refs/tags/release/v2.1.0", "is not allowed by the tag rule v*"),
+        ("refs/tags/v２.1.0", "is not a release tag"),
+    ],
+)
+def test_readiness_rejects_other_refs(tmp_path: Path, ref: str, reason: str) -> None:
+    run = _run_step(tmp_path, _ready_responses(), {"github.ref": ref})
+    _assert_not_ready(run, reason)
+
+
+@pytest.mark.parametrize(
+    "context, reason",
     [
         (
-            {"REPOSITORY": "1solomonwakhungu/brickflow"},
-            READY_ENVIRONMENT,
+            {"github.repository": "1solomonwakhungu/brickflow"},
             "is not the publishing repository",
         ),
-        ({"READINESS_FLAG": ""}, READY_ENVIRONMENT, "PYPI_TRUSTED_PUBLISHING"),
-        ({"READINESS_FLAG": "true"}, READY_ENVIRONMENT, "PYPI_TRUSTED_PUBLISHING"),
-        ({"EVENT_NAME": "push"}, READY_ENVIRONMENT, "published release"),
-        ({"EVENT_ACTION": "created"}, READY_ENVIRONMENT, "published release"),
-        ({"GIT_REF": "refs/heads/main"}, READY_ENVIRONMENT, "not a tag"),
-        ({}, None, "does not exist"),
-        ({}, "", "does not exist"),
-        ({}, {"message": "Not Found", "status": "404"}, "does not exist"),
-        ({}, dict(READY_ENVIRONMENT, protection_rules=[]), "no required reviewers"),
+        ({"vars.PYPI_TRUSTED_PUBLISHING": ""}, "PYPI_TRUSTED_PUBLISHING"),
+        ({"vars.PYPI_TRUSTED_PUBLISHING": "true"}, "PYPI_TRUSTED_PUBLISHING"),
+        ({"github.event_name": "push"}, "published release"),
+        ({"github.event.action": "created"}, "published release"),
+    ],
+)
+def test_readiness_rejects_event_gates(
+    tmp_path: Path, context: Dict[str, str], reason: str
+) -> None:
+    _assert_not_ready(_run_step(tmp_path, _ready_responses(), context), reason)
+
+
+def test_readiness_reads_the_running_repository(tmp_path: Path) -> None:
+    fork = "1solomonwakhungu/brickflow"
+    run = _run_step(tmp_path, _ready_responses(), {"github.repository": fork})
+    _assert_not_ready(run, "is not the publishing repository")
+    assert run.endpoints == [f"repos/{fork}/environments/pypi"]
+    assert "could not be read: GET repos/1solomonwakhungu" in run.output
+
+
+def test_readiness_rejects_malformed_repository_without_api_calls(
+    tmp_path: Path,
+) -> None:
+    run = _run_step(tmp_path, _ready_responses(), {"github.repository": "a/b/../c"})
+    _assert_not_ready(run, "repository name 'a/b/../c' is malformed")
+    assert run.records == []
+
+
+@pytest.mark.parametrize(
+    "response, reason",
+    [
         (
-            {},
-            dict(
-                READY_ENVIRONMENT,
-                protection_rules=[{"type": "required_reviewers", "reviewers": []}],
-            ),
-            "no required reviewers",
+            {"status": 1, "stdout": json.dumps(READY_ENVIRONMENT)},
+            "failed with exit status 1",
         ),
         (
-            {},
-            dict(READY_ENVIRONMENT, deployment_branch_policy=None),
-            "every branch and tag",
+            {
+                "status": 4,
+                "stdout": json.dumps(READY_ENVIRONMENT),
+                "stderr": "HTTP 403",
+            },
+            "failed with exit status 4: HTTP 403",
+        ),
+        (_ok(""), "returned an empty response"),
+        (_ok("{"), "returned malformed JSON"),
+        (_ok("[]"), "the API did not return environment 'pypi'"),
+        (_ok({"message": "Not Found"}), "the API did not return environment 'pypi'"),
+        (_ok(dict(READY_ENVIRONMENT, name="pypi-test")), "did not return environment"),
+        (_ok("x" * (1024 * 1024 + 1)), "returned more than 1048576 bytes"),
+    ],
+)
+def test_readiness_environment_lookup_fails_closed(
+    tmp_path: Path, response: Dict[str, Any], reason: str
+) -> None:
+    run = _run_step(tmp_path, _ready_responses(**{ENV_ENDPOINT: response}))
+    _assert_not_ready(run, reason)
+    assert run.endpoints == [ENV_ENDPOINT]
+
+
+def test_readiness_missing_environment_fails(tmp_path: Path) -> None:
+    run = _run_step(tmp_path, {})
+    _assert_not_ready(run, "failed with exit status 1: gh: Not Found (HTTP 404)")
+    assert run.endpoints == [ENV_ENDPOINT]
+
+
+def test_readiness_api_call_times_out(tmp_path: Path) -> None:
+    slow = dict(_ok(READY_ENVIRONMENT), sleep=5)
+    run = _run_step(
+        tmp_path,
+        _ready_responses(**{ENV_ENDPOINT: slow}),
+        env_overrides={"API_CALL_TIMEOUT_SECONDS": "1"},
+    )
+    _assert_not_ready(run, f"GET {ENV_ENDPOINT} timed out")
+
+
+def test_readiness_without_gh_fails(tmp_path: Path) -> None:
+    if shutil.which("gh", path="/usr/bin:/bin"):
+        pytest.skip("a system gh is on the restricted PATH")
+    run = _run_step(tmp_path, _ready_responses(), with_gh=False)
+    _assert_not_ready(run, "could not run gh")
+
+
+@pytest.mark.parametrize("value", ["0", "61", "", "1.5", "٣٠", "abc"])
+def test_readiness_rejects_bad_timeout_settings(tmp_path: Path, value: str) -> None:
+    run = _run_step(
+        tmp_path, _ready_responses(), env_overrides={"API_CALL_TIMEOUT_SECONDS": value}
+    )
+    assert run.returncode != 0, run.output
+    assert "API_CALL_TIMEOUT_SECONDS must be" in run.output
+    assert run.records == []
+
+
+def _environment(**changes: Any) -> Dict[str, Any]:
+    return dict(READY_ENVIRONMENT, **changes)
+
+
+def _reviewers(*entries: Any) -> List[Dict[str, Any]]:
+    return [{"id": 10, "type": "required_reviewers", "reviewers": list(entries)}]
+
+
+USER = {"type": "User", "reviewer": {"id": 101}}
+
+
+@pytest.mark.parametrize(
+    "environment, reason",
+    [
+        (_environment(protection_rules=[]), "no required reviewers rule"),
+        (_environment(protection_rules=None), "malformed protection rules"),
+        (_environment(protection_rules="required"), "malformed protection rules"),
+        (_environment(protection_rules=[{"id": 1}]), "malformed protection rules"),
+        (
+            _environment(
+                protection_rules=[
+                    {
+                        "id": 1,
+                        "type": "wait_timer",
+                        "wait_timer": 5,
+                        "reviewers": [USER],
+                    }
+                ]
+            ),
+            "no required reviewers rule",
+        ),
+        (
+            _environment(protection_rules=[{"id": 1, "type": "branch_policy"}]),
+            "no required reviewers rule",
+        ),
+        (_environment(protection_rules=_reviewers()), "rule with no reviewers"),
+        (
+            _environment(protection_rules=[{"id": 1, "type": "required_reviewers"}]),
+            "rule with no reviewers",
+        ),
+        (_environment(protection_rules=_reviewers({})), "malformed required reviewer"),
+        (
+            _environment(protection_rules=_reviewers({"type": "User"})),
+            "malformed required reviewer",
+        ),
+        (
+            _environment(
+                protection_rules=_reviewers({"type": "Bot", "reviewer": {"id": 1}})
+            ),
+            "malformed required reviewer",
+        ),
+        (
+            _environment(
+                protection_rules=_reviewers({"type": "User", "reviewer": {"id": True}})
+            ),
+            "malformed required reviewer",
+        ),
+        (
+            _environment(
+                protection_rules=_reviewers({"type": "User", "reviewer": {"id": "1"}})
+            ),
+            "malformed required reviewer",
+        ),
+        (
+            _environment(protection_rules=_reviewers(USER, "maintainer")),
+            "malformed required reviewer",
         ),
     ],
 )
-def test_readiness_fails_closed(
-    tmp_path: Path, overrides: Dict[str, str], environment: Optional[Any], reason: str
+def test_readiness_requires_valid_reviewers(
+    tmp_path: Path, environment: Dict[str, Any], reason: str
 ) -> None:
-    result = _run_readiness(tmp_path, overrides, environment)
-    assert result.returncode == 1, result.stdout + result.stderr
-    assert reason in result.stdout
-    assert "nothing will be uploaded" in result.stdout
+    run = _run_step(tmp_path, _ready_responses(**{ENV_ENDPOINT: _ok(environment)}))
+    _assert_not_ready(run, reason)
+    # Reviewer problems are reported alongside, not instead of, the rule check.
+    assert run.endpoints == [ENV_ENDPOINT, _rules_page(1)]
+
+
+@pytest.mark.parametrize(
+    "policy, reason",
+    [
+        (None, "allows deployments from every branch and tag"),
+        (
+            {"protected_branches": True, "custom_branch_policies": False},
+            "does not limit deployments to selected tags",
+        ),
+        (
+            {"protected_branches": False, "custom_branch_policies": False},
+            "does not limit deployments to selected tags",
+        ),
+        (
+            {"protected_branches": True, "custom_branch_policies": True},
+            "does not limit deployments to selected tags",
+        ),
+        ({"protected_branches": False}, "malformed deployment policy"),
+        (
+            {"protected_branches": 0, "custom_branch_policies": 1},
+            "malformed deployment policy",
+        ),
+        ("custom", "malformed deployment policy"),
+    ],
+)
+def test_readiness_requires_selected_tag_mode(
+    tmp_path: Path, policy: Any, reason: str
+) -> None:
+    environment = _environment(deployment_branch_policy=policy)
+    run = _run_step(tmp_path, _ready_responses(**{ENV_ENDPOINT: _ok(environment)}))
+    _assert_not_ready(run, reason)
+    assert run.endpoints == [ENV_ENDPOINT]
+
+
+@pytest.mark.parametrize(
+    "rules, reason",
+    [
+        ([], "tag rules are [], expected exactly [v*]"),
+        ([_rule("*")], "tag rules are [*], expected exactly [v*]"),
+        ([_rule("v2.*")], "tag rules are [v2.*], expected exactly [v*]"),
+        (
+            [_rule("v*"), _rule("unreviewed", rule_id=2)],
+            "tag rules are [unreviewed, v*], expected exactly [v*]",
+        ),
+        ([_rule("v*"), _rule("v*", rule_id=2)], "expected exactly [v*]"),
+        (
+            [_rule("v*"), _rule("main", "branch", 2)],
+            "allows deployments from branches matching main",
+        ),
+        ([_rule("v*", "branch")], "allows deployments from branches matching v*"),
+        ([{"id": 1, "name": "v*"}], "malformed deployment rule"),
+        ([_rule("v*", "Tag")], "malformed deployment rule"),
+        ([_rule("")], "malformed deployment rule"),
+        ([{"id": 1, "name": None, "type": "tag"}], "malformed deployment rule"),
+        (["v*"], "malformed deployment rule"),
+    ],
+)
+def test_readiness_requires_exact_tag_rule(
+    tmp_path: Path, rules: List[Any], reason: str
+) -> None:
+    responses = _ready_responses(**{_rules_page(1): _ok(_rules_body(rules))})
+    _assert_not_ready(_run_step(tmp_path, responses), reason)
+
+
+@pytest.mark.parametrize(
+    "response, reason",
+    [
+        (
+            {"status": 1, "stdout": json.dumps(_rules_body([_rule("v*")]))},
+            "failed with exit status 1",
+        ),
+        (_ok(""), "returned an empty response"),
+        (_ok("not json"), "returned malformed JSON"),
+        (_ok([_rule("v*")]), "page 1 is malformed"),
+        (_ok({"branch_policies": [_rule("v*")]}), "page 1 is malformed"),
+        (_ok({"total_count": "1", "branch_policies": []}), "page 1 is malformed"),
+        (_ok({"total_count": -1, "branch_policies": []}), "page 1 is malformed"),
+        (_ok({"total_count": True, "branch_policies": []}), "page 1 is malformed"),
+        (_ok({"total_count": 1, "branch_policies": None}), "page 1 is malformed"),
+        (
+            _ok(_rules_body([_rule("v*")], total=2)),
+            "read 1 deployment rules, expected 2",
+        ),
+        (
+            _ok(_rules_body([_rule("v*"), _rule("w*", rule_id=2)], total=1)),
+            "read 2 deployment rules, expected 1",
+        ),
+    ],
+)
+def test_readiness_rule_lookup_fails_closed(
+    tmp_path: Path, response: Dict[str, Any], reason: str
+) -> None:
+    run = _run_step(tmp_path, _ready_responses(**{_rules_page(1): response}))
+    _assert_not_ready(run, "deployment rules of environment 'pypi' could not be read")
+    assert reason in run.output, run.output
+
+
+def _full_page(start: int, count: int = 100) -> List[Dict[str, Any]]:
+    return [
+        _rule(f"b{index}", "branch", index) for index in range(start, start + count)
+    ]
+
+
+def test_readiness_reads_every_rule_page(tmp_path: Path) -> None:
+    first = [_rule("v*")] + _full_page(2, 99)
+    responses = _ready_responses(
+        **{
+            _rules_page(1): _ok(_rules_body(first, total=101)),
+            _rules_page(2): _ok(_rules_body([_rule("main", "branch", 500)], total=101)),
+        }
+    )
+    run = _run_step(tmp_path, responses)
+    _assert_not_ready(run, "allows deployments from branches matching")
+    assert "main" in run.output
+    assert [record["args"] for record in run.records] == [
+        GH_PREFIX + [ENV_ENDPOINT],
+        GH_PREFIX + [_rules_page(1)],
+        GH_PREFIX + [_rules_page(2)],
+    ]
+
+
+@pytest.mark.parametrize(
+    "second_page, reason",
+    [
+        (_ok(_rules_body([], total=101)), "read 100 deployment rules, expected 101"),
+        (
+            _ok(_rules_body([_rule("x", "branch", 900)], total=102)),
+            "changed while they were read",
+        ),
+        ({"status": 1, "stdout": "{}"}, "failed with exit status 1"),
+    ],
+)
+def test_readiness_rejects_incomplete_pagination(
+    tmp_path: Path, second_page: Dict[str, Any], reason: str
+) -> None:
+    responses = _ready_responses(
+        **{
+            _rules_page(1): _ok(_rules_body(_full_page(1), total=101)),
+            _rules_page(2): second_page,
+        }
+    )
+    run = _run_step(tmp_path, responses)
+    _assert_not_ready(run, reason)
+    assert run.endpoints == [ENV_ENDPOINT, _rules_page(1), _rules_page(2)]
+
+
+def test_readiness_bounds_rule_pages(tmp_path: Path) -> None:
+    responses = _ready_responses(
+        **{
+            _rules_page(page): _ok(_rules_body(_full_page(page * 100), total=500))
+            for page in range(1, 7)
+        }
+    )
+    run = _run_step(tmp_path, responses)
+    _assert_not_ready(run, "allows deployments from branches matching")
+    assert run.endpoints == [ENV_ENDPOINT] + [_rules_page(page) for page in range(1, 6)]
+
+
+def test_readiness_refuses_oversized_rule_lists(tmp_path: Path) -> None:
+    responses = _ready_responses(
+        **{_rules_page(1): _ok(_rules_body(_full_page(1), total=501))}
+    )
+    run = _run_step(tmp_path, responses)
+    _assert_not_ready(run, "more than 500 deployment rules")
+    assert run.endpoints == [ENV_ENDPOINT, _rules_page(1)]
+
+
+def test_readiness_reports_every_problem(tmp_path: Path) -> None:
+    context = {
+        "github.repository": "1solomonwakhungu/brickflow",
+        "vars.PYPI_TRUSTED_PUBLISHING": "",
+        "github.ref": "refs/tags/latest",
+    }
+    run = _run_step(tmp_path, {}, context)
+    _assert_not_ready(run, "is not the publishing repository")
+    assert "PYPI_TRUSTED_PUBLISHING" in run.output
+    assert "is not a release tag" in run.output
+    assert "environment 'pypi' could not be read" in run.output
+
+
+def test_publish_gates_are_all_rechecked_by_readiness() -> None:
+    """Each clause of the publish condition has a failing readiness case above."""
+    condition = _build_jobs()["publish-pypi"]["if"]
+    clauses = {part.strip() for part in condition.split("&&")}
+    assert clauses == {
+        "github.event_name == 'release'",
+        "github.event.action == 'published'",
+        "github.repository == 'Nike-Inc/brickflow'",
+        "startsWith(github.ref, 'refs/tags/')",
+        "vars.PYPI_TRUSTED_PUBLISHING == 'ready'",
+    }
+    expressions = set(_readiness_step()["env"].values())
+    for expression in (
+        "${{ github.event_name }}",
+        "${{ github.event.action }}",
+        "${{ github.repository }}",
+        "${{ github.ref }}",
+        "${{ vars.PYPI_TRUSTED_PUBLISHING }}",
+    ):
+        assert expression in expressions
 
 
 def test_dependabot_configuration() -> None:
@@ -451,3 +962,120 @@ def test_dependabot_configuration() -> None:
     assert updates["docker"]["directory"] == "/"
     # Python version updates stay off; the lockfile is maintained deliberately.
     assert updates["pip"]["open-pull-requests-limit"] == 0
+
+
+# The build job's certificate bundle step is executed as written, against a
+# throwaway virtual environment holding a stand-in certifi package.
+
+PEM = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n"
+
+
+def _certifi_step() -> Dict[str, Any]:
+    steps = _steps(_build_jobs()["build-distributions"])
+    matches = [
+        step
+        for step in steps
+        if step.get("name") == "Check build tool certificate bundle"
+    ]
+    assert len(matches) == 1
+    return matches[0]
+
+
+def _run_certifi_step(
+    tmp_path: Path,
+    version: Optional[str],
+    bundle: Optional[str] = PEM,
+    where: Optional[str] = None,
+) -> "subprocess.CompletedProcess[str]":
+    tools = tmp_path / "build-tools"
+    subprocess.run(
+        [sys.executable, "-m", "venv", "--without-pip", str(tools)],
+        check=True,
+        capture_output=True,
+        timeout=120,
+    )
+    site = subprocess.run(
+        [
+            str(tools / "bin" / "python"),
+            "-I",
+            "-c",
+            "import site; print(site.getsitepackages()[0])",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    ).stdout.strip()
+    if version is not None:
+        package = Path(site) / "certifi"
+        package.mkdir()
+        if bundle is not None:
+            (package / "cacert.pem").write_text(bundle)
+        location = (
+            repr(where)
+            if where
+            else "os.path.join(os.path.dirname(__file__), 'cacert.pem')"
+        )
+        (package / "__init__.py").write_text(
+            f"import os\n__version__ = {version!r}\n\ndef where():\n    return {location}\n"
+        )
+    step = _certifi_step()
+    assert "/tmp/build-tools/bin/python -I -" in step["run"]
+    script = tmp_path / "step.sh"
+    script.write_text(step["run"].replace("/tmp/build-tools", str(tools)))
+    env = {"PATH": "/usr/bin:/bin", "HOME": str(tmp_path)}
+    env.update({key: str(value) for key, value in step["env"].items()})
+    return subprocess.run(
+        ["/bin/bash", "--noprofile", "--norc", "-eo", "pipefail", str(script)],
+        env=env,
+        cwd=str(tmp_path),
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+
+
+def test_build_tools_require_the_certifi_floor() -> None:
+    install = next(
+        step["run"]
+        for step in _steps(_build_jobs()["build-distributions"])
+        if step.get("name") == "Install build tools"
+    )
+    floor = _certifi_step()["env"]["CERTIFI_FLOOR"]
+    assert floor == "2026.10.18"
+    assert f'"certifi>={floor}"' in install
+
+
+@pytest.mark.parametrize("version", ["2026.10.18", "2026.10.23", "2027.1.5"])
+def test_certifi_step_accepts_current_bundle(tmp_path: Path, version: str) -> None:
+    result = _run_certifi_step(tmp_path, version)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert f"certifi {version}, bundle {tmp_path}" in result.stdout.replace(
+        str(tmp_path.resolve()), str(tmp_path)
+    )
+
+
+@pytest.mark.parametrize(
+    "version, bundle, where, reason",
+    [
+        (None, PEM, None, "certifi is not installed"),
+        ("2025.1.31", PEM, None, "older than 2026.10.18"),
+        ("2026.10.17", PEM, None, "older than 2026.10.18"),
+        ("latest", PEM, None, "unexpected certifi version"),
+        ("2026.10.18.post1", PEM, None, "unexpected certifi version"),
+        ("2026.10.18", "", None, "does not contain a PEM certificate"),
+        ("2026.10.18", "not a bundle", None, "does not contain a PEM certificate"),
+        ("2026.10.18", PEM, "/etc/hosts", "is outside the build tool environment"),
+    ],
+)
+def test_certifi_step_rejects_bad_environments(
+    tmp_path: Path,
+    version: Optional[str],
+    bundle: Optional[str],
+    where: Optional[str],
+    reason: str,
+) -> None:
+    result = _run_certifi_step(tmp_path, version, bundle, where)
+    assert result.returncode != 0, result.stdout
+    assert reason in result.stderr, result.stderr

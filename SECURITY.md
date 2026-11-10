@@ -37,9 +37,11 @@ package, refer to the upstream project.
 ## Publishing safeguards
 
 The release workflow in this repository cannot upload to PyPI from this fork.
-It publishes only from the upstream repository, only for a published release,
-and only after the prerequisites in
-[docs/publication-readiness.md](docs/publication-readiness.md) are in place
-and verified by the workflow. Those prerequisites are account and repository
-settings that this repository's files cannot configure, and none of them has
-been set up as part of this change.
+It publishes only from the upstream repository, only for a published release
+tag, and only after a readiness check has verified the upstream `pypi`
+environment settings it can read through the GitHub API; see
+[docs/publication-readiness.md](docs/publication-readiness.md). The PyPI
+trusted publisher registration cannot be read by the workflow and is not
+checked. All of these prerequisites are account and repository settings that
+this repository's files cannot configure, and none of them has been set up as
+part of this change.

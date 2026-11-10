@@ -110,7 +110,45 @@ jobs:
           /tmp/build-tools/bin/python -m pip install \
             "poetry==1.8.5" \
             "poetry-dynamic-versioning[plugin]==1.10.1" \
-            "twine==7.0.0"
+            "twine==7.0.0" \
+            "certifi>=2026.10.18"
+
+      # Checks the certificate bundle of this build tool environment. Uploads
+      # do not run here: they run inside the PyPA publish action's own
+      # container, whose dependencies and CA bundle this workflow does not
+      # verify (see docs/publication-readiness.md).
+      - name: Check build tool certificate bundle
+        env:
+          CERTIFI_FLOOR: "2026.10.18" # first release with the GHSA-6q48-6c7w-9gw2 fix
+        run: |
+          /tmp/build-tools/bin/python -I - <<'PY'
+          import os
+          import re
+          import sys
+
+          try:
+              import certifi
+          except ImportError:
+              sys.exit("certifi is not installed in the build tool environment")
+
+          def parse(version):
+              if not re.fullmatch(r"[0-9]{4}\.[0-9]{1,2}\.[0-9]{1,2}", version):
+                  sys.exit("unexpected certifi version %r" % version)
+              return tuple(int(part) for part in version.split("."))
+
+          version = certifi.__version__
+          bundle = os.path.realpath(certifi.where())
+          prefix = os.path.realpath(sys.prefix) + os.sep
+          if parse(version) < parse(os.environ["CERTIFI_FLOOR"]):
+              sys.exit("certifi %s is older than %s" % (version, os.environ["CERTIFI_FLOOR"]))
+          if not bundle.startswith(prefix):
+              sys.exit("certifi bundle %s is outside the build tool environment" % bundle)
+          with open(bundle, "rb") as handle:
+              head = handle.read(4096)
+          if b"-----BEGIN CERTIFICATE-----" not in head:
+              sys.exit("certifi bundle %s does not contain a PEM certificate" % bundle)
+          print("certifi %s, bundle %s" % (version, bundle))
+          PY
 
       - name: Build distributions
         run: |
@@ -130,64 +168,267 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  # Fails a release run, with the reason, unless every publication prerequisite
-  # is verifiably in place. A skipped publish would otherwise look like success.
+  # Fails a release run, with the reasons, unless every publication
+  # prerequisite this workflow can read is verifiably in place. A skipped
+  # publish would otherwise look like success. This check reports readiness;
+  # GitHub itself enforces the pypi environment's rules on the publish job.
   publication-readiness:
     name: Publication readiness
     if: github.event_name == 'release'
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     permissions:
-      actions: read # read the pypi environment's protection rules
+      actions: read # read the pypi environment and its deployment rules
     steps:
-      - name: Read pypi environment settings
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPOSITORY: ${{ github.repository }}
-        run: |
-          status=0
-          gh api "repos/${REPOSITORY}/environments/pypi" > "${RUNNER_TEMP}/pypi-environment.json" || status=$?
-          echo "Environment lookup exit status: ${status}"
-
       - name: Check publication readiness
         env:
+          GH_TOKEN: ${{ github.token }}
+          GH_PROMPT_DISABLED: "1"
+          GH_NO_UPDATE_NOTIFIER: "1"
           EXPECTED_REPOSITORY: Nike-Inc/brickflow
+          # The only deployment rule the pypi environment may have: a tag
+          # rule with exactly this name pattern, and no branch rules.
+          EXPECTED_TAG_RULE: v*
+          API_CALL_TIMEOUT_SECONDS: "30"
+          API_DEADLINE_SECONDS: "120"
           REPOSITORY: ${{ github.repository }}
           EVENT_NAME: ${{ github.event_name }}
           EVENT_ACTION: ${{ github.event.action }}
           GIT_REF: ${{ github.ref }}
           READINESS_FLAG: ${{ vars.PYPI_TRUSTED_PUBLISHING }}
         run: |
-          python3 -I - "${RUNNER_TEMP}/pypi-environment.json" <<'PY'
+          python3 -I - <<'PY'
           import json
           import os
+          import re
+          import subprocess
           import sys
+          import tempfile
+          import time
+
+          API_VERSION = "2022-11-28"
+          PER_PAGE = 100
+          MAX_PAGES = 5
+          MAX_RESPONSE_BYTES = 1024 * 1024
+          RELEASE_TAG = re.compile(
+              r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
+              r"((a|b|rc)(0|[1-9][0-9]*))?"
+          )
+          REPOSITORY_NAME = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
+          RULE_PATTERN = re.compile(r"[A-Za-z0-9_.*?-]+")
+
+
+          class ApiError(Exception):
+              pass
+
+
+          def bounded_seconds(name, upper):
+              value = os.environ.get(name, "")
+              if not re.fullmatch(r"[0-9]{1,3}", value) or not 1 <= int(value) <= upper:
+                  raise SystemExit("%s must be a whole number from 1 to %d" % (name, upper))
+              return int(value)
+
+
+          CALL_TIMEOUT = bounded_seconds("API_CALL_TIMEOUT_SECONDS", 60)
+          DEADLINE = time.monotonic() + bounded_seconds("API_DEADLINE_SECONDS", 240)
+
+
+          def is_count(value):
+              return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+          def api_get(endpoint):
+              """Return the JSON body of a successful GET, or raise ApiError."""
+              remaining = DEADLINE - time.monotonic()
+              if remaining <= 0:
+                  raise ApiError("the time allowed for GitHub API requests ran out")
+              command = [
+                  "gh", "api", "--method", "GET",
+                  "-H", "Accept: application/vnd.github+json",
+                  "-H", "X-GitHub-Api-Version: " + API_VERSION,
+                  endpoint,
+              ]
+              with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
+                  try:
+                      process = subprocess.Popen(
+                          command, stdin=subprocess.DEVNULL, stdout=out, stderr=err
+                      )
+                  except OSError as error:
+                      raise ApiError("could not run gh: %s" % error.strerror)
+                  try:
+                      status = process.wait(timeout=min(CALL_TIMEOUT, remaining))
+                  except subprocess.TimeoutExpired:
+                      process.kill()
+                      process.wait()
+                      raise ApiError("GET %s timed out" % endpoint)
+                  if status != 0:
+                      err.seek(0)
+                      detail = err.read(300).decode("utf-8", "replace").strip()
+                      raise ApiError(
+                          "GET %s failed with exit status %d%s"
+                          % (endpoint, status, ": " + detail if detail else "")
+                      )
+                  size = out.seek(0, os.SEEK_END)
+                  if size == 0:
+                      raise ApiError("GET %s returned an empty response" % endpoint)
+                  if size > MAX_RESPONSE_BYTES:
+                      raise ApiError("GET %s returned more than %d bytes" % (endpoint, MAX_RESPONSE_BYTES))
+                  out.seek(0)
+                  try:
+                      return json.loads(out.read().decode("utf-8"))
+                  except ValueError:
+                      raise ApiError("GET %s returned malformed JSON" % endpoint)
+
+
+          def valid_reviewer(entry):
+              if not isinstance(entry, dict) or entry.get("type") not in ("User", "Team"):
+                  return False
+              reviewer = entry.get("reviewer")
+              return isinstance(reviewer, dict) and is_count(reviewer.get("id")) and reviewer["id"] > 0
+
+
+          def reviewer_problems(environment):
+              rules = environment.get("protection_rules")
+              if not isinstance(rules, list) or not all(
+                  isinstance(rule, dict) and isinstance(rule.get("type"), str) for rule in rules
+              ):
+                  return ["environment 'pypi' has malformed protection rules"]
+              reviewer_rules = [rule for rule in rules if rule["type"] == "required_reviewers"]
+              if not reviewer_rules:
+                  return ["environment 'pypi' has no required reviewers rule"]
+              for rule in reviewer_rules:
+                  reviewers = rule.get("reviewers")
+                  if not isinstance(reviewers, list) or not reviewers:
+                      return ["environment 'pypi' has a required reviewers rule with no reviewers"]
+                  if not all(valid_reviewer(entry) for entry in reviewers):
+                      return ["environment 'pypi' has a malformed required reviewer"]
+              return []
+
+
+          def deployment_mode_problems(environment):
+              policy = environment.get("deployment_branch_policy")
+              if policy is None:
+                  return ["environment 'pypi' allows deployments from every branch and tag"]
+              if not isinstance(policy, dict) or not all(
+                  isinstance(policy.get(key), bool)
+                  for key in ("protected_branches", "custom_branch_policies")
+              ):
+                  return ["environment 'pypi' has a malformed deployment policy"]
+              if policy["protected_branches"] or not policy["custom_branch_policies"]:
+                  return ["environment 'pypi' does not limit deployments to selected tags"]
+              return []
+
+
+          def list_deployment_rules(endpoint):
+              """Read every page of the environment's deployment rules."""
+              rules = []
+              total = None
+              for page in range(1, MAX_PAGES + 1):
+                  body = api_get("%s?per_page=%d&page=%d" % (endpoint, PER_PAGE, page))
+                  items = body.get("branch_policies") if isinstance(body, dict) else None
+                  count = body.get("total_count") if isinstance(body, dict) else None
+                  if not is_count(count) or not isinstance(items, list) or len(items) > PER_PAGE:
+                      raise ApiError("deployment rules page %d is malformed" % page)
+                  if total is None:
+                      total = count
+                      if total > MAX_PAGES * PER_PAGE:
+                          raise ApiError("more than %d deployment rules" % (MAX_PAGES * PER_PAGE))
+                  elif count != total:
+                      raise ApiError("the deployment rules changed while they were read")
+                  rules.extend(items)
+                  if len(rules) >= total or len(items) < PER_PAGE:
+                      break
+              if len(rules) != total:
+                  raise ApiError("read %d deployment rules, expected %d" % (len(rules), total))
+              return rules
+
+
+          def matches_rule(pattern, name):
+              """GitHub name patterns: '*' and '?' never match '/'."""
+              regex = "".join(
+                  "[^/]*" if char == "*" else "[^/]" if char == "?" else re.escape(char)
+                  for char in pattern
+              )
+              return re.fullmatch(regex, name) is not None
+
+
+          def deployment_rule_problems(rules, expected, tag):
+              names = {"branch": [], "tag": []}
+              for rule in rules:
+                  if (
+                      not isinstance(rule, dict)
+                      or rule.get("type") not in names
+                      or not isinstance(rule.get("name"), str)
+                      or not rule["name"]
+                  ):
+                      return ["environment 'pypi' has a malformed deployment rule"]
+                  names[rule["type"]].append(rule["name"])
+              problems = []
+              if names["branch"]:
+                  problems.append(
+                      "environment 'pypi' allows deployments from branches matching %s"
+                      % ", ".join(sorted(names["branch"]))
+                  )
+              if names["tag"] != [expected]:
+                  problems.append(
+                      "environment 'pypi' tag rules are [%s], expected exactly [%s]"
+                      % (", ".join(sorted(names["tag"])), expected)
+                  )
+              elif tag is not None and not matches_rule(expected, tag):
+                  problems.append("tag %s is not allowed by the tag rule %s" % (tag, expected))
+              return problems
+
 
           problems = []
+          repository = os.environ["REPOSITORY"]
+          expected_rule = os.environ["EXPECTED_TAG_RULE"]
           if os.environ["EVENT_NAME"] != "release" or os.environ["EVENT_ACTION"] != "published":
               problems.append("publication runs only for a published release")
-          if not os.environ["GIT_REF"].startswith("refs/tags/"):
+          tag = None
+          if os.environ["GIT_REF"].startswith("refs/tags/"):
+              tag = os.environ["GIT_REF"][len("refs/tags/"):]
+              if not RELEASE_TAG.fullmatch(tag):
+                  problems.append(
+                      "tag %s is not a release tag (vMAJOR.MINOR.PATCH, optionally"
+                      " followed by aN, bN or rcN)" % tag
+                  )
+          else:
               problems.append("the release ref is not a tag")
-          if os.environ["REPOSITORY"] != os.environ["EXPECTED_REPOSITORY"]:
+          if repository != os.environ["EXPECTED_REPOSITORY"]:
               problems.append(
                   "repository %s is not the publishing repository %s"
-                  % (os.environ["REPOSITORY"], os.environ["EXPECTED_REPOSITORY"])
+                  % (repository, os.environ["EXPECTED_REPOSITORY"])
               )
           if os.environ["READINESS_FLAG"] != "ready":
               problems.append("repository variable PYPI_TRUSTED_PUBLISHING is not 'ready'")
+          if not RULE_PATTERN.fullmatch(expected_rule):
+              problems.append("EXPECTED_TAG_RULE %r is not a supported name pattern" % expected_rule)
 
-          try:
-              with open(sys.argv[1], encoding="utf-8") as handle:
-                  environment = json.load(handle)
-          except (OSError, ValueError):
-              environment = None
-          if not isinstance(environment, dict) or environment.get("name") != "pypi":
-              problems.append("environment 'pypi' does not exist or could not be read")
+          if not REPOSITORY_NAME.fullmatch(repository):
+              problems.append("repository name %r is malformed" % repository)
           else:
-              rules = environment.get("protection_rules") or []
-              if not any(rule.get("reviewers") for rule in rules if isinstance(rule, dict)):
-                  problems.append("environment 'pypi' has no required reviewers")
-              if not environment.get("deployment_branch_policy"):
-                  problems.append("environment 'pypi' allows deployments from every branch and tag")
+              endpoint = "repos/%s/environments/pypi" % repository
+              try:
+                  environment = api_get(endpoint)
+              except ApiError as error:
+                  environment = None
+                  problems.append("environment 'pypi' could not be read: %s" % error)
+              if environment is not None:
+                  if not isinstance(environment, dict) or environment.get("name") != "pypi":
+                      problems.append("the API did not return environment 'pypi'")
+                  else:
+                      problems.extend(reviewer_problems(environment))
+                      mode_problems = deployment_mode_problems(environment)
+                      problems.extend(mode_problems)
+                      if not mode_problems:
+                          try:
+                              rules = list_deployment_rules(endpoint + "/deployment-branch-policies")
+                          except ApiError as error:
+                              problems.append(
+                                  "deployment rules of environment 'pypi' could not be read: %s" % error
+                              )
+                          else:
+                              problems.extend(deployment_rule_problems(rules, expected_rule, tag))
 
           if problems:
               print("PyPI publication is not ready; nothing will be uploaded:")
