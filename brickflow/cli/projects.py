@@ -633,6 +633,13 @@ def synth_bundles_for_project(project: str, **kwargs: Any) -> None:
 
 
 @projects.command(name="deploy")
+@click.option(
+    "--skip-validate",
+    is_flag=True,
+    default=False,
+    show_default=True,
+    help="Skip bundle validation before deployment.",
+)
 @apply_bundles_deployment_options
 def deploy_project(project: str, **kwargs: Any) -> None:
     """Deploy the resources and workflows to databricks for the project

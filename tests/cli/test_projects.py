@@ -1,9 +1,62 @@
 from pathlib import Path
+from contextlib import nullcontext
+import importlib
 import shutil
 import os
+from types import SimpleNamespace
+import click
+from click.testing import CliRunner
 import pytest
 from brickflow import ConfigFileType
+from brickflow.cli import cli
 from brickflow.cli.projects import MultiProjectManager, get_brickflow_root
+
+
+@pytest.mark.parametrize("skip_validate", [False, True])
+def test_project_deploy_routes_validation_option(monkeypatch, mocker, skip_validate):
+    projects_module = importlib.import_module("brickflow.cli.projects")
+    project = SimpleNamespace(path_project_root_to_workflows_dir="synthetic_workflows")
+    manager = mocker.Mock()
+    manager.get_project.return_value = project
+    manager.get_project_ref.return_value.root_yaml_rel_path = "."
+    monkeypatch.setattr(projects_module, "multi_project_manager", manager)
+    monkeypatch.setattr(projects_module, "use_project", lambda *args: nullcontext())
+    monkeypatch.setattr(projects_module, "handle_libraries", lambda **kwargs: None)
+    for parameter in projects_module.deploy_project.params:
+        if parameter.name == "project":
+            monkeypatch.setattr(parameter, "type", click.Choice(["analytics"]))
+    deploy = mocker.patch("brickflow.cli.projects.bundle_deploy")
+    # Restore environment bindings after Click's callbacks run.
+    monkeypatch.setenv("BRICKFLOW_ENV", "local")
+    monkeypatch.setenv("DATABRICKS_CONFIG_PROFILE", "synthetic")
+    args = [
+        "projects",
+        "deploy",
+        "--project",
+        "analytics",
+        "--env",
+        "dev",
+        "--profile",
+        "synthetic",
+    ]
+    if skip_validate:
+        args.append("--skip-validate")
+
+    result = CliRunner().invoke(cli, args)
+
+    assert result.exit_code == 0, result.output
+    deploy.assert_called_once()
+    assert deploy.call_args.kwargs["skip_validate"] is skip_validate
+    assert deploy.call_args.kwargs["workflows_dir"] == "synthetic_workflows"
+    assert os.environ["BRICKFLOW_ENV"] == "dev"
+    assert os.environ["DATABRICKS_CONFIG_PROFILE"] == "synthetic"
+
+
+@pytest.mark.parametrize("command", ["synth", "sync", "destroy"])
+def test_skip_validate_is_only_a_deploy_option(command):
+    result = CliRunner().invoke(cli, ["projects", command, "--skip-validate"])
+    assert result.exit_code == 2
+    assert "No such option: --skip-validate" in result.output
 
 
 @pytest.mark.parametrize(

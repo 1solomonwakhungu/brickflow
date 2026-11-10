@@ -25,7 +25,7 @@ from brickflow_plugins.sensors import Sensor
 def _resolve_tls_verify(
     ca_bundle: Optional[Union[str, "os.PathLike[str]"]],
 ) -> Union[bool, str]:
-    """Return the ``requests`` ``verify`` value; verification is always on."""
+    """Return the ``requests`` ``verify`` value; verification is on for HTTPS."""
     if ca_bundle is None:
         return True
     ca_path = os.fspath(ca_bundle)
@@ -40,7 +40,7 @@ class AutosysSensor(Sensor):
     and waits until it reports a successful status recent enough to satisfy
     ``time_delta``.
 
-    The server certificate is always verified. Pass ``ca_bundle`` (a CA
+    The server certificate is verified for HTTPS connections. Pass ``ca_bundle`` (a CA
     bundle file or OpenSSL hashed certificate directory) to trust a private
     certificate authority; otherwise the default trust store is used
     (``requests`` also honors the ``REQUESTS_CA_BUNDLE`` environment variable).

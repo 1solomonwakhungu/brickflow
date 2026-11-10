@@ -225,11 +225,11 @@ config = {{ class_name }}(value="{{ value }}")
 class TestArtifactoryClient:
     """Test suite for ArtifactoryClient."""
 
-    @patch("brickflow.engine.task_executor.requests.get")
+    @patch("brickflow.engine.task_executor._ArtifactSession.get")
     def test_download_artifact_success(self, mock_get):
         """Test successful artifact download."""
         # Mock response
-        mock_response = Mock()
+        mock_response = Mock(status_code=200, headers={})
         mock_response.iter_content = Mock(return_value=[b"test", b"data"])
         mock_response.raise_for_status = Mock()
         mock_get.return_value = mock_response
@@ -255,17 +255,17 @@ class TestArtifactoryClient:
             if tmp_path.exists():
                 tmp_path.unlink()
 
-    @patch("brickflow.engine.task_executor.requests.get")
+    @patch("brickflow.engine.task_executor._ArtifactSession.get")
     def test_download_artifact_failure(self, mock_get):
         """Test artifact download failure."""
         # Mock failed response
-        mock_response = Mock()
+        mock_response = Mock(status_code=200, headers={})
         mock_response.raise_for_status.side_effect = Exception("Download failed")
         mock_get.return_value = mock_response
 
         client = ArtifactoryClient()
 
-        with pytest.raises(Exception, match="Download failed"):
+        with pytest.raises(Exception, match="Artifact download failed"):
             client.download_artifact("https://example.com/artifact.whl")
 
 

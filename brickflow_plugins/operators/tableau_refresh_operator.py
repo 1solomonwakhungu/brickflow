@@ -86,7 +86,7 @@ def _resolve_tls_verify(
 ) -> Union[bool, str]:
     """Return the ``requests`` ``verify`` value for a Tableau connection.
 
-    Certificate verification is always enabled. When ``ca_bundle`` is set,
+    Certificate verification is enabled for HTTPS connections. When ``ca_bundle`` is set,
     the server certificate is validated against that CA bundle file (or
     OpenSSL hashed certificate directory) instead of the default trust store.
     """
@@ -184,7 +184,7 @@ class TableauWrapper:
             used to verify the Tableau server certificate, e.g. for a private
             PKI. When omitted, the default trust store is used (``requests``
             also honors the ``REQUESTS_CA_BUNDLE`` environment variable).
-            Certificate verification cannot be disabled.
+            HTTPS verification has no bypass option.
         """
         _ensure_tableau()
         self.server = server

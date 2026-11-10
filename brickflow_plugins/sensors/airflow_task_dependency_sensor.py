@@ -40,7 +40,7 @@ def _api_variant(version: str) -> str:
 def _resolve_tls_verify(
     ca_bundle: Optional[Union[str, "os.PathLike[str]"]],
 ) -> Union[bool, str]:
-    """Return the ``requests`` ``verify`` value; verification is always on."""
+    """Return the ``requests`` ``verify`` value; verification is on for HTTPS."""
     if ca_bundle is None:
         return True
     ca_path = os.fspath(ca_bundle)
@@ -75,7 +75,7 @@ class AirflowCluster:
         used to verify the Airflow server certificate, e.g. for a private
         PKI. When omitted, the default trust store is used (``requests``
         also honors the ``REQUESTS_CA_BUNDLE`` environment variable).
-        Certificate verification cannot be disabled.
+        HTTPS verification has no bypass option.
     """
 
     def __init__(
@@ -299,6 +299,10 @@ class AirflowTaskDependencySensor(Sensor):
         status = ""
         while status not in self.allowed_states:
             status = self.poke()
+            if status in self.allowed_states:
+                if (time.time() - self._start_time) > self.timeout:
+                    raise TimeoutError("The job has timed out!")
+                break
             if status == "failed":
                 # Log the fact that upstream failed, however do not fail the task
                 # and continue poking until timeout.
@@ -308,10 +312,8 @@ class AirflowTaskDependencySensor(Sensor):
                     self.dag_id,
                     self.task_id,
                 )
-                time.sleep(self.poke_interval)
-            elif status != "success":
-                time.sleep(self.poke_interval)
+            time.sleep(self.poke_interval)
 
             if (time.time() - self._start_time) > self.timeout:
                 raise TimeoutError("The job has timed out!")
-        log.info("Upstream DAG '%s' is successful", self.dag_id)
+        log.info("Upstream DAG '%s' reached allowed state '%s'", self.dag_id, status)

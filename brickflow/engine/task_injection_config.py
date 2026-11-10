@@ -1,11 +1,37 @@
 """Configuration for task injection from YAML files."""
 
 import os
+import re
 from dataclasses import dataclass, field
 from typing import Any, cast, Optional, List, Dict
 import yaml
 from brickflow import _ilog as log
 from brickflow.engine.task import TaskType
+
+
+# Databricks task keys: letters, digits, "_" and "-", at most 100 characters.
+_TASK_NAME_PATTERN = re.compile(r"[A-Za-z0-9_-]{1,100}")
+
+
+def validate_task_name(task_name: Any) -> str:
+    """
+    Check that ``task_name`` is a valid Databricks task key.
+
+    Injected task names become file names (``<task_name>.py``) and task keys, so
+    path separators, ``..``, absolute paths and other characters are rejected.
+
+    Returns:
+        The validated task name.
+
+    Raises:
+        ValueError: if the name is not a valid task key.
+    """
+    if not isinstance(task_name, str) or not _TASK_NAME_PATTERN.fullmatch(task_name):
+        raise ValueError(
+            f"Invalid injected task_name {task_name!r}: use 1-100 letters, digits, "
+            "'_' or '-'."
+        )
+    return task_name
 
 
 @dataclass
@@ -106,6 +132,9 @@ class TaskDefinition:
           right: "{{value2}}"
           op: "=="
     """
+
+    def __post_init__(self) -> None:
+        validate_task_name(self.task_name)
 
 
 @dataclass

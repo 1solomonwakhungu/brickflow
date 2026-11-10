@@ -22,6 +22,7 @@ from xml.etree import ElementTree
 import pytest
 import requests
 
+from brickflow_plugins.operators import tableau_refresh_operator as tableau
 from brickflow_plugins.sensors.airflow_task_dependency_sensor import (
     AirflowCluster,
     AirflowTaskDependencySensor,
@@ -288,12 +289,9 @@ class TestAutosysTls:
             _autosys_sensor("https://autosys.invalid", ca_bundle="")
 
 
-tableau = pytest.importorskip(
-    "brickflow_plugins.operators.tableau_refresh_operator",
-    reason="tableauserverclient is not installed",
+requires_tableau = pytest.mark.skipif(
+    tableau.TSC is None, reason="tableauserverclient is not installed"
 )
-if tableau.TSC is None:  # pragma: no cover - depends on optional extra
-    pytest.skip("tableauserverclient is not installed", allow_module_level=True)
 
 
 @pytest.fixture(name="logs")
@@ -324,6 +322,7 @@ def _operator_kwargs(**overrides):
     return kwargs
 
 
+@requires_tableau
 class TestTableauCredentials:
     def test_password_not_logged_and_reaches_authenticator(self, mocker, logs):
         server_cls = mocker.patch.object(tableau.TSC, "Server")
@@ -383,6 +382,7 @@ class TestTableauCredentials:
             )
 
 
+@requires_tableau
 class TestTableauTls:
     def _wrapper(self, url, **kwargs):
         return tableau.TableauWrapper(
