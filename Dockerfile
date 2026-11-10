@@ -1,4 +1,4 @@
-FROM ubuntu:20.04
+FROM ubuntu:20.04@sha256:8feb4d8ca5354def3d8fce243717141ce31e2c428701f6682bd2fafe15388214
 USER root
 
 # DO NOT ADD AS ENV:
@@ -15,19 +15,6 @@ USER root
 RUN echo 'debconf debconf/frontend select Noninteractive' | debconf-set-selections && \
     apt-get update -y && apt-get install -y git curl wget unzip software-properties-common
 SHELL ["/bin/bash", "-c"]
-
-ENV NODE_VERSION 18.14.0
-
-RUN echo 'debconf debconf/frontend select Noninteractive' | debconf-set-selections  \
-    && curl https://raw.githubusercontent.com/creationix/nvm/master/install.sh | bash  \
-    && . $HOME/.nvm/nvm.sh \
-    && nvm install $NODE_VERSION \
-    && nvm use $NODE_VERSION \
-    && npm install --global cdktf-cli@latest
-
-ENV NODE_PATH /root/.nvm/versions/node/v$NODE_VERSION/lib/node_modules
-ENV PATH /root/.nvm/versions/node/v$NODE_VERSION/bin:$PATH
-ENV NVM_DIR /root/.nvm
 
 RUN add-apt-repository ppa:deadsnakes/ppa
 RUN apt-get install -y python3.9 python3-pip python3.9-distutils && ln -s /usr/bin/python3.9 /usr/bin/python
