@@ -957,9 +957,12 @@ As databricks secrets is a key value store, code expects the secret scope to con
 The operator keeps the Snowflake connector's OCSP certificate revocation
 check on in fail-open mode on every supported connector release (connector
 4.8 otherwise turns it off). On Python 3.9 the `snowflake` extra installs
-connector 3.18.x, which still writes some session secrets to DEBUG-level
-connector logs (GHSA-qqj6-54q6-cxv6); do not enable DEBUG logging for
-`snowflake.connector` on Python 3.9 jobs, or run them on Python 3.10+. See
+connector 3.18.x, whose diagnostic logs can expose session secrets
+(GHSA-qqj6-54q6-cxv6), including error paths. Disabling DEBUG logging alone
+is insufficient; restrict access to logs and follow the advisory's guidance
+for deleting affected historical logs. Use Python 3.10+ for the fixed
+connector. OCSP mode is process-wide, including subsequent connections on a
+shared driver. See
 [Dependency security](dependency-security.md#snowflake-extra).
 
 SnowflakeOperator can accept the following as inputs

@@ -147,15 +147,18 @@ Why the ranges look the way they do (PyPI and OSV, checked 2026-11-10):
   Python 3.9 and are vulnerable, so the Python 3.9 range stays on 3.18.x.
 * GHSA-qqj6 (tokens, result keys and pre-signed URLs in connector logs) is
   fixed only in 4.7.3, which requires Python 3.10. On Python 3.9 it is open.
-  Brickflow does not raise the connector's log level; anyone who can read
-  DEBUG-level connector logs on a Python 3.9 job may see session secrets.
+  Connector diagnostic logs can expose session secrets, including error
+  paths; avoiding DEBUG logging alone does not close this advisory. Restrict
+  access to existing logs and follow the advisory's guidance to delete
+  affected historical logs. Python 3.10+ is needed for the fixed connector.
 * Connector 3.18.x requires pyOpenSSL < 26, and cryptography 44+ excludes
   Python 3.9.0 and 3.9.1, so the Python 3.9 lock stays on cryptography 43.0.3
   and pyOpenSSL 24.3.0. A fresh pip install on Python 3.9.2 or later gets
   pyOpenSSL 25.3.0 with cryptography 46.0.0: 46.0.1+ needs cffi 2 on Python
-  3.9 and the connector requires cffi < 2. 46.0.0 has as many open
-  advisories as 43.0.3 (GHSA-537c-gmf6-5ccf and GHSA-jwv3-5hgf-82ww among
-  them), so this is not an improvement on Python 3.9.
+  3.9 and the connector requires cffi < 2. 46.0.0 has seven distinct
+  GHSA matches versus six for 43.0.3 in the checked advisory data (adding
+  g6cj and p423 and dropping 79v4), so this does not close the Python 3.9
+  dependency risks.
 * The 4.x connector requires filelock < 4, and the filelock fixes for
   GHSA-69hj and GHSA-8mx5 are in 4.2.1, which requires Python 3.11.
   Connector 5.x drops filelock but is a separate major release for Python
@@ -165,8 +168,10 @@ Why the ranges look the way they do (PyPI and OSV, checked 2026-11-10):
   The lock keeps 3.20.3, the last release before the ReadWriteLock and
   SoftFileLock code that has further advisories; published installs accept
   any `>= 3.20.3, < 4`, so a fresh install on Python 3.10+ gets the newest
-  3.x (3.32.7 on 2026-11-10), whose extra advisories are in code the
-  connector does not call.
+  3.x (3.32.7 on 2026-11-10). Some additional advisories also affect a
+  plain `FileLock` falling back to a soft lock when the filesystem lacks
+  `flock` (GHSA-fq56, GHSA-rfpc and GHSA-567q). They cannot all be dismissed
+  as code the connector never uses.
 * Connector 3.18.1 depends on boto3 and botocore. Both are already in the
   lock through the cerberus extra.
 
@@ -175,15 +180,19 @@ Behaviour changes that reach the Snowflake operators:
 * **OCSP.** Connector 4.8 turned OCSP revocation checks off unless the
   caller sets `ocsp_fail_open`; 3.x enabled them in fail-open mode by
   default. The operators now pass `ocsp_fail_open=True`, so revocation
-  checking stays on, in the same mode, on every supported release.
+  checking stays on, in the same mode, on every supported release. The OCSP
+  mode is process-wide: on 4.8, this enables fail-open checking for later
+  connections too, while an earlier fail-closed setting remains fail-closed.
+  Shared drivers and notebooks therefore share this effect.
   `tests/databricks_plugins/test_snowflake_operator.py` runs the installed
   connector's own parameter handling (login stubbed, no network) and checks
   the resulting OCSP mode.
-* **Platform detection.** Since 3.17 the connector probes cloud metadata
-  endpoints during login to report the platform to Snowflake. It does not
-  change authentication. Set `platform_detection_timeout_seconds=0` in the
-  connector if that probe is not wanted; the operators do not expose
-  connector options.
+* **Platform detection.** Since 3.17 the connector performs cloud platform
+  detection during login. Beyond metadata endpoints, this can call AWS STS
+  `GetCallerIdentity` with available cluster credentials and request an Azure
+  managed-identity token. The `SNOWFLAKE_DISABLE_PLATFORM_DETECTION` switch
+  exists only in 4.x; it is not a mitigation for the Python 3.9 connector.
+  These account/platform interactions were not exercised in local tests.
 
 The plugin library list in `brickflow/engine/task.py` pins the connector per
 Python version next to `snowflake==1.5.1`:
