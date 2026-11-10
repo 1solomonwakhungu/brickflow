@@ -10,13 +10,10 @@ complete. No Airflow dependency -- plain Python classes with an
 from __future__ import annotations
 
 import concurrent.futures
-import html
-import json
 import os
 import time
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, Optional, Set, Union
-from urllib.parse import quote, quote_plus
+from typing import TYPE_CHECKING, Any, Callable, Dict, Optional, Union
 
 from brickflow_plugins import log
 from brickflow_plugins._origin_policy import (
@@ -110,38 +107,6 @@ def _resolve_tls_verify(
     return ca_path
 
 
-def _secret_forms(secret: str) -> Set[str]:
-    """Return the encodings in which ``secret`` may appear in error text."""
-    forms = {
-        secret,
-        html.escape(secret, quote=True),
-        html.escape(secret, quote=False),
-        secret.replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-        .replace('"', "&#34;")
-        .replace("'", "&#39;"),
-        quote(secret, safe=""),
-        quote_plus(secret, safe=""),
-        json.dumps(secret)[1:-1],
-        repr(secret)[1:-1],
-        repr(secret.encode("utf-8"))[2:-1],
-    }
-    return {form for form in forms if form}
-
-
-def _redact_secrets(text: str, secrets: Iterable[Optional[str]]) -> str:
-    """Replace every known encoding of each non-empty secret with ``***``."""
-    forms: Set[str] = set()
-    for secret in secrets:
-        if secret:
-            forms |= _secret_forms(secret)
-    # Longest first, so an encoded form is not partially replaced by a shorter one.
-    for form in sorted(forms, key=len, reverse=True):
-        text = text.replace(form, _REDACTED)
-    return text
-
-
 def _tableau_session_factory(
     origin: Origin, verify: Union[bool, str]
 ) -> Callable[[], OriginBoundSession]:
@@ -187,9 +152,9 @@ class TableauSignInError(Exception):
 
     Raised in place of the ``tableauserverclient`` exception (for example
     ``FailedSignInError``, ``ServerResponseError`` or ``NonXMLResponseError``)
-    so server-supplied text can be redacted. The message keeps the original
-    exception type name and text with every occurrence of the configured
-    password replaced by ``***``. The original exception is neither chained
+    so server-supplied text is omitted. The message keeps only the original
+    exception type name, never a response body that might reflect credentials.
+    The original exception is neither chained
     nor kept as implicit context.
     Transport errors (``OSError`` and its ``requests`` subclasses such as
     ``requests.exceptions.SSLError`` and
@@ -311,7 +276,7 @@ class TableauWrapper:
         The client's session sends only to the HTTPS origin of ``server``,
         verifies certificates and refuses cross-origin redirects before any
         credentials are sent. Sign-in failures other than transport errors are
-        re-raised as :class:`TableauSignInError` with the password redacted.
+        re-raised as :class:`TableauSignInError` without server-supplied text.
         """
         origin = https_origin(self.server)
         self._authenticator = TSC.TableauAuth(self.username, self.password, self.site)
@@ -329,10 +294,12 @@ class TableauWrapper:
             raise
         except Exception as exc:  # pylint: disable=broad-except
             original_type = type(exc).__name__
-            message = _redact_secrets(f"{original_type}: {exc}", [self.password])
         # Raised outside the handler so the unredacted exception is neither the
         # cause nor the implicit context of the error callers see.
-        raise TableauSignInError(f"Tableau sign-in failed: {message}", original_type)
+        raise TableauSignInError(
+            f"Tableau sign-in failed ({original_type}); server response omitted",
+            original_type,
+        )
 
     def _get_job_status(self, job_id: str) -> dict:
         """

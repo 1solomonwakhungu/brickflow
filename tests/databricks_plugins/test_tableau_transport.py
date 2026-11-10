@@ -480,7 +480,7 @@ class TestTableauTransport:
         text = _format(excinfo.value)
         assert TABLEAU_SENTINEL not in text
         assert repr(TABLEAU_SENTINEL)[1:-1] not in text
-        assert "***" in str(excinfo.value)
+        assert "server response omitted" in str(excinfo.value)
         # The unredacted client exception must not be reachable from the raised
         # error, including through implicit context that tools may walk.
         assert excinfo.value.__cause__ is None
@@ -507,3 +507,45 @@ def test_installed_client_matches_supported_range():
         assert Version("0.41") <= version < Version("0.42")
     else:
         assert Version("0.25") <= version < Version("0.39")
+
+
+@pytest.mark.parametrize(
+    "password",
+    ["both\"quotes'here", "line\nwith\ttab", "nonascii-\u00e9", 'slash\\quote"'],
+)
+@pytest.mark.parametrize("reflection", ["request", "json", "html"])
+def test_signin_response_text_is_omitted(origins, pki, logs, password, reflection):
+    import html
+    import json
+
+    origin = origins["a"]
+    origin.tableau_api()
+
+    def echo(_origin, request):
+        body = (
+            request["body"]
+            if reflection == "request"
+            else (
+                json.dumps(password) if reflection == "json" else html.escape(password)
+            )
+        )
+        return 401, {"Content-Type": "text/plain"}, body.encode("utf-8")
+
+    origin.routes[("POST", f"{API}/auth/signin")] = echo
+    wrapper = tableau.TableauWrapper(
+        server=origin.url,
+        username="synthetic",
+        password=password,
+        site="site",
+        ca_bundle=str(pki["ca"]),
+    )
+    with pytest.raises(tableau.TableauSignInError) as raised:
+        wrapper._authenticate()
+    error = raised.value
+    assert (
+        str(error)
+        == f"Tableau sign-in failed ({error.original_type}); server response omitted"
+    )
+    assert error.__cause__ is None
+    assert error.__context__ is None
+    assert password not in logs()

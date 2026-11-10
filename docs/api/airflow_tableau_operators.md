@@ -53,8 +53,8 @@ representation of `wrapper_options` and `TableauWrapper`. When sign-in fails
 for a reason other than a transport error, the operators raise
 `TableauSignInError` in place of the tableauserverclient exception
 (`FailedSignInError`, `ServerResponseError`, `NonXMLResponseError` and so on).
-Its message keeps the original type name and text with the password, in its
-raw, XML-, URL- and repr-escaped forms, replaced by `***`; `original_type`
+Its message keeps only the original exception type name and omits all server
+response text, including echoed or multiply escaped credentials. `original_type`
 holds the original class name, and the original exception is neither chained
 nor kept as implicit context (`__cause__` and `__context__` are `None`).
 Transport errors such as `requests.exceptions.SSLError`, `ConnectionError`,

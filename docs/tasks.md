@@ -1086,7 +1086,7 @@ fail. If fail behavior is not desired, `fail_operator = False` can be set in the
 for a private certificate authority (see [TLS certificate verification](#tls-certificate-verification)).
 Requests, including redirects, are limited to the origin of `server`. The password field is masked in
 the wrapper option log and text representations. Sign-in failures other than transport errors raise
-`TableauSignInError` with the password redacted from the server's message; errors after sign-in are
+`TableauSignInError` with all server response text omitted; errors after sign-in are
 propagated as the server sent them.
 
 ```python title="tableau_refresh_operators"
