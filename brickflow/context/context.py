@@ -3,7 +3,6 @@ import datetime
 import decimal
 import json
 import math
-import re
 import time
 import uuid
 import warnings
@@ -23,6 +22,7 @@ from typing import (
     Dict,
     List,
     TypeVar,
+    Iterator,
 )
 from collections.abc import Hashable
 
@@ -131,7 +131,7 @@ def resolve_legacy_pickle_mode(
     for member in TaskValueLegacyPickleMode:
         if normalized == member.value:
             return member
-    raise ValueError(
+    raise TaskValueSerializationError(
         f"Invalid {BrickflowEnvVars.BRICKFLOW_TASK_VALUES_LEGACY_PICKLE.value} value: {raw!r}; "
         f"expected one of {[m.value for m in TaskValueLegacyPickleMode]}"
     )
@@ -159,8 +159,6 @@ TASK_VALUE_ENVELOPE_KEY = "__brickflow_task_value__"
 TASK_VALUE_ENVELOPE_VERSION = 1
 _ENVELOPE_PREFIX = '{"' + TASK_VALUE_ENVELOPE_KEY + '":'
 _TYPE_TAG = "$bf"
-_JSON_STRING_RE = re.compile(r'"(?:[^"\\]|\\.)*"', re.DOTALL)
-_JSON_BRACKET_RE = re.compile(r"[\[\]{}]")
 _SUPPORTED_TYPES_DESCRIPTION = (
     "None, bool, int, float, str, bytes, list, tuple, dict, set, frozenset, "
     "datetime.datetime, datetime.date, datetime.time, datetime.timedelta, decimal.Decimal, uuid.UUID"
@@ -342,13 +340,42 @@ def _from_json_tree(node: Any, budget: _Budget, depth: int = 0) -> Any:
     raise TaskValueSerializationError(f"Malformed task value: unknown type tag {tag!r}")
 
 
+def _json_tokens(text: str) -> Iterator[str]:
+    """Scan forward once, including on malformed or unterminated strings.
+
+    Syntax validation remains with the JSON parser. This scan bounds its input
+    structure without retrying token matches at embedded escaped quotes.
+    """
+    position = 0
+    while position < len(text):
+        start = position
+        char = text[position]
+        position += 1
+        if char in " \t\r\n,:":
+            continue
+        if char == '"':
+            while position < len(text):
+                char = text[position]
+                position += 1
+                if char == "\\":
+                    position += 1
+                elif char == '"':
+                    break
+            else:
+                raise TaskValueSerializationError("Unterminated JSON string")
+        elif char not in "{}[]":
+            while position < len(text) and text[position] not in ' \t\r\n,:{}[]"':
+                position += 1
+        yield text[start:position]
+
+
 def _json_nesting_depth(text: str) -> int:
     depth = max_depth = 0
-    for match in _JSON_BRACKET_RE.finditer(_JSON_STRING_RE.sub("", text)):
-        if match.group() in "[{":
+    for token in _json_tokens(text):
+        if token in ("[", "{"):
             depth += 1
             max_depth = max(max_depth, depth)
-        else:
+        elif token in ("]", "}"):
             depth -= 1
     return max_depth
 
@@ -360,13 +387,8 @@ def _preflight_json_nodes(text: str, limits: TaskValueLimits) -> None:
     is the largest scalar representation); the outer envelope contributes four.
     Exact logical item and depth limits are also checked after parsing.
     """
-    tokens = re.finditer(
-        r'"(?:[^"\\]|\\.)*"|[{}\[\]]|true|false|null|-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?',
-        text,
-    )
     count = 0
-    for token in tokens:
-        value = token.group()
+    for value in _json_tokens(text):
         if value not in ("}", "]"):
             count += 1
         if count > 8 * limits.max_items + 4:

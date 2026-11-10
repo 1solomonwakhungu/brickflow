@@ -5,6 +5,7 @@ import json
 import math
 import pickle
 import uuid
+import warnings
 from collections import OrderedDict
 from pathlib import Path
 from unittest.mock import Mock
@@ -475,3 +476,42 @@ def test_valid_and_absent_branch_decisions_remain_compatible(rule):
     assert Task.should_skip(child)[0] is True
     ctx._task_coms.put("parent", BRANCH_SKIP_EXCEPT, "unselected")
     assert Task.should_skip(child) == (False, None)
+
+
+@pytest.mark.parametrize("rule", ["ALL_SUCCESS", "NONE_FAILED"])
+@pytest.mark.parametrize("mode", ["typo", "read"])
+def test_branch_transport_policy_errors_propagate(rule, mode):
+    from types import SimpleNamespace
+    from brickflow.engine.task import Task, BrickflowTriggerRule
+
+    ctx._task_coms = BrickflowTaskComs(legacy_pickle=mode)
+    ctx._task_coms.storage["parent::" + BRANCH_SKIP_EXCEPT] = base64.b64encode(
+        pickle.dumps(BrickflowTaskComsObject._TaskComsObject("chosen"))
+    ).decode()
+    child = SimpleNamespace(
+        parents=["parent"],
+        name="unselected",
+        trigger_rule=getattr(BrickflowTriggerRule, rule),
+        _get_skip_with_reason=Task._get_skip_with_reason,
+    )
+    error = (
+        TaskValueSerializationError if mode == "typo" else LegacyPickleTaskValueWarning
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", LegacyPickleTaskValueWarning)
+        with pytest.raises(error):
+            Task.should_skip(child)
+
+
+@pytest.mark.parametrize("scan", ["decode", "depth", "nodes"])
+def test_unterminated_escaped_string_is_rejected(scan):
+    from brickflow.context.context import _json_nesting_depth, _preflight_json_nodes
+
+    wire = PREFIX + '"' + '\\"' * 64000 + "}"
+    with pytest.raises(TaskValueSerializationError):
+        if scan == "decode":
+            decode_task_value(wire)
+        elif scan == "depth":
+            _json_nesting_depth(wire)
+        else:
+            _preflight_json_nodes(wire, TaskValueLimits())

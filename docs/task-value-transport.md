@@ -145,3 +145,5 @@ protocol2–5 pickles with the expected framing; noncanonical or oversized value
 may remain raw. Invalid legacy settings are checked when encoding or reading
 recognized legacy data, not for raw passthrough or JSON reads. Treat legacy mode
 as a temporary trusted-producer migration mechanism, and remove it after rollout.
+
+Invalid legacy-mode settings raise `TaskValueSerializationError` (a `ValueError`). Branch evaluation propagates this error and legacy warnings promoted to errors, so either policy failure stops the dependent task. JSON preflight scans advance once through each token, including unterminated strings with escaped quotes.
