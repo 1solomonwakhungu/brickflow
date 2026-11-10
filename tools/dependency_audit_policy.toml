@@ -1,0 +1,184 @@
+# Dependency advisory policy for tools/dependency_audit.py.
+# See docs/dependency-security.md for how to read and change this file.
+#
+# Every exception names the exact package version, advisories, Python versions
+# and (optionally) dependency scopes it covers, plus a dated review. An
+# exception that expires, or a new advisory/version/Python lane it does not
+# cover, fails the audit.
+
+[audit]
+# Supported interpreters (pyproject.toml: python = ">=3.9,<3.13").
+python_versions = ["3.9", "3.10", "3.11", "3.12"]
+platforms = ["linux", "darwin", "win32"]
+# Scopes whose advisories block. Development and documentation groups are
+# reported only: they never ship to Brickflow users.
+blocking_scopes = ["runtime", "extra:*"]
+
+# ---------------------------------------------------------------------------
+# Security floors. The audit checks the lockfile against them and the
+# `installed` subcommand checks real environments against them.
+# ---------------------------------------------------------------------------
+
+[[floor]]
+package = "certifi"
+minimum = "2026.10.18"
+reason = "GHSA-6q48-6c7w-9gw2: compromised emSign intermediate CA keys."
+
+[[floor]]
+package = "requests"
+minimum = "2.33.0"
+python = ["3.10", "3.11", "3.12"]
+reason = "GHSA-9hjg-9r4m-mvj7 and GHSA-gc5v-m9x4-r6x2."
+
+[[floor]]
+package = "requests"
+minimum = "2.32.4"
+python = ["3.9"]
+reason = "GHSA-9hjg-9r4m-mvj7; 2.33.0 requires Python 3.10."
+
+[[floor]]
+package = "jinja2"
+minimum = "3.1.6"
+reason = "GHSA-cpwx-vrp4-4pq7."
+
+# ---------------------------------------------------------------------------
+# urllib3 1.26.20 (DEP-02).
+# ---------------------------------------------------------------------------
+
+[[exception]]
+package = "urllib3"
+scopes = ["runtime", "extra:all-plugins", "extra:box", "extra:cerberus", "extra:snowflake", "extra:tableau"]
+versions = ["1.26.20"]
+python = ["3.10", "3.11", "3.12"]
+advisories = [
+    "GHSA-2xpw-w6gg-jr37",
+    "GHSA-gm62-xv2j-4w53",
+    "GHSA-38jv-5279-wg99",
+    "GHSA-vxq7-64xx-v4gw",
+    "GHSA-pq67-6m6q-mj2v",
+    "GHSA-qccp-gfcp-xxvc",
+    "GHSA-8988-9cw3-xx77",
+]
+classification = "deferred-upgrade"
+review_by = 2026-12-15
+reason = """
+Python 3.10-3.12. tableauserverclient 0.25 (tableau extra and the plugin
+library list Brickflow installs on Databricks clusters) requires
+urllib3 ~= 1.26.8, which holds the whole lock on 1.26.20. Reachable:
+Brickflow's artifact download streams through requests/urllib3. Fixed by the
+DEP-02 change (tableauserverclient 0.41, urllib3 >= 2.8.0), which needs the
+cluster library list in brickflow/engine/task.py updated in the same release.
+"""
+
+[[exception]]
+package = "urllib3"
+scopes = ["runtime", "extra:all-plugins", "extra:box", "extra:cerberus", "extra:snowflake", "extra:tableau"]
+versions = ["1.26.20"]
+python = ["3.9"]
+advisories = [
+    "GHSA-2xpw-w6gg-jr37",
+    "GHSA-gm62-xv2j-4w53",
+    "GHSA-38jv-5279-wg99",
+    "GHSA-vxq7-64xx-v4gw",
+    "GHSA-pq67-6m6q-mj2v",
+    "GHSA-qccp-gfcp-xxvc",
+    "GHSA-8988-9cw3-xx77",
+]
+classification = "compatibility-blocked"
+review_by = 2027-01-31
+reason = """
+Python 3.9 lane only. Every botocore release (cerberus extra) and every
+snowflake-connector-python release (snowflake extra) that still supports
+Python 3.9 requires urllib3 < 2 there, so the shared lock cannot move.
+These advisories are reachable: Brickflow's artifact download streams through
+requests/urllib3, so a malicious or compromised artifact endpoint can drive the
+decompression and chunk-parsing flaws (2xpw, gm62, 38jv, vxq7). A pip install
+on Python 3.9 without the snowflake or cerberus extras resolves urllib3 2.6.3,
+which fixes 2xpw, gm62, 38jv and pq67. Full remediation needs Python 3.10+.
+"""
+
+[[exception]]
+package = "requests"
+scopes = ["runtime", "extra:all-plugins", "extra:box", "extra:cerberus", "extra:snowflake", "extra:tableau"]
+versions = ["2.32.5"]
+python = ["3.9"]
+advisories = ["GHSA-gc5v-m9x4-r6x2"]
+classification = "compatibility-blocked"
+review_by = 2027-01-31
+reason = """
+Python 3.9 lane only; requests 2.33.0 requires Python 3.10. The advisory
+affects extract_zipped_paths(), which requests uses only when its CA bundle is
+inside a zip archive. Brickflow does not call it or ship zipped CA bundles.
+"""
+
+# ---------------------------------------------------------------------------
+# Snowflake extra: fixes need a Snowflake connector upgrade (separate change).
+# ---------------------------------------------------------------------------
+
+[[exception]]
+package = "snowflake-connector-python"
+versions = ["3.13.2"]
+python = ["3.9", "3.10", "3.11", "3.12"]
+scopes = ["extra:snowflake", "extra:all-plugins"]
+advisories = ["GHSA-5cc2-282f-jjq2", "GHSA-qqj6-54q6-cxv6"]
+classification = "deferred-upgrade"
+review_by = 2026-12-15
+reason = """
+Reachable when the Snowflake plugin connects: GHSA-5cc2 (critical) lets an
+on-path attacker bypass TLS hostname verification. Fixed in 3.18.1 (Python
+3.9) and 4.7.1+ (Python 3.10+, a major-version upgrade that also raises the
+cryptography floor). Track as a separate Snowflake upgrade; do not extend this
+exception without that decision.
+"""
+
+[[exception]]
+package = "cryptography"
+versions = ["43.0.3"]
+python = ["3.9", "3.10", "3.11", "3.12"]
+scopes = ["extra:snowflake", "extra:all-plugins"]
+advisories = [
+    "GHSA-537c-gmf6-5ccf",
+    "GHSA-79v4-65xg-pq4g",
+    "GHSA-jwv3-5hgf-82ww",
+    "GHSA-m2h6-j472-rp4c",
+    "GHSA-m959-cc7f-wv43",
+    "GHSA-r6ph-v2qm-q3c2",
+]
+classification = "deferred-upgrade"
+review_by = 2026-12-15
+reason = """
+Pinned below 45 by pyOpenSSL 24.3.0, which snowflake-connector-python 3.13.2
+requires. Moves with the Snowflake connector upgrade.
+"""
+
+[[exception]]
+package = "pyopenssl"
+versions = ["24.3.0"]
+python = ["3.9", "3.10", "3.11", "3.12"]
+scopes = ["extra:snowflake", "extra:all-plugins"]
+advisories = ["GHSA-5pwr-322w-8jr4", "GHSA-vp96-hxj8-p424"]
+classification = "deferred-upgrade"
+review_by = 2026-12-15
+reason = """
+snowflake-connector-python 3.x requires pyOpenSSL < 26. Brickflow does not use
+DTLS or SNI callbacks itself. Moves with the Snowflake connector upgrade.
+"""
+
+[[exception]]
+package = "filelock"
+versions = ["3.19.1"]
+python = ["3.9", "3.10", "3.11", "3.12"]
+scopes = ["extra:snowflake", "extra:all-plugins"]
+advisories = [
+    "GHSA-69hj-f68j-2879",
+    "GHSA-8mx5-7m5m-r77g",
+    "GHSA-qmgc-5h2g-mvrw",
+    "GHSA-w853-jp5j-5j7f",
+]
+classification = "deferred-upgrade"
+review_by = 2026-12-15
+reason = """
+Local lock-file races in the Snowflake connector's cache; fixed releases need
+Python 3.10 (3.20.x) or 3.11 (4.2.x) and the connector caps filelock below 4.
+Moves with the Snowflake connector upgrade.
+"""
