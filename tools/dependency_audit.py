@@ -1086,11 +1086,9 @@ def fetch_advisories(
     hits = client.query(pairs)
     details: Dict[str, Advisory] = {}
     for advisory_id in sorted({i for ids in hits.values() for i in ids}):
-        if advisory_id in details:
-            continue
-        advisory = Advisory.from_osv(client.vulnerability(advisory_id))
-        for alias in advisory.all_ids():
-            details.setdefault(alias, advisory)
+        # Aliases identify related records, not interchangeable withdrawal states.
+        # Fetch every queried ID before deduplicating active findings.
+        details[advisory_id] = Advisory.from_osv(client.vulnerability(advisory_id))
     grouped: Dict[Tuple[str, str], List[Advisory]] = {}
     for pair, ids in hits.items():
         seen: Dict[str, Advisory] = {}

@@ -849,3 +849,42 @@ def test_complete_json_with_truncated_content_length_fails_cli(project: Path) ->
     stub.extra_length = 100
     with osv_server(stub) as url:
         assert _run(project, url) == audit.EXIT_INCOMPLETE
+
+
+@pytest.mark.parametrize(
+    "withdrawn_id,active_id",
+    [
+        ("GHSA-aaaa-0000-0000", "GHSA-zzzz-0000-0000"),
+        ("GHSA-zzzz-0000-0000", "GHSA-aaaa-0000-0000"),
+    ],
+)
+@pytest.mark.parametrize("reverse_hits", [False, True])
+@pytest.mark.parametrize("missing_active", [False, True])
+def test_withdrawn_alias_cannot_hide_queried_active_record(
+    project: Path,
+    withdrawn_id: str,
+    active_id: str,
+    reverse_hits: bool,
+    missing_active: bool,
+) -> None:
+    stub = OsvStub()
+    ids = [withdrawn_id, active_id]
+    stub.hits[("requests", "2.34.2")] = list(reversed(ids)) if reverse_hits else ids
+    stub.vulns[withdrawn_id] = _advisory(
+        withdrawn_id,
+        "requests",
+        "2.35",
+        aliases=[active_id],
+        withdrawn="2026-01-01T00:00:00Z",
+    )
+    if not missing_active:
+        stub.vulns[active_id] = _advisory(
+            active_id, "requests", "2.35", aliases=[withdrawn_id]
+        )
+    with osv_server(stub) as url:
+        assert _run(project, url) == (
+            audit.EXIT_INCOMPLETE if missing_active else audit.EXIT_POLICY
+        )
+    assert f"GET /v1/vulns/{active_id}" in stub.requests
+    if not missing_active:
+        assert len(_report(project)["findings"]) == 1
