@@ -17,7 +17,6 @@ from brickflow import (
     get_bundles_project_env,
     get_entrypoint_python,
 )
-from brickflow import ctx as brickflow_ctx
 from brickflow.cli.commands import exec_command
 from brickflow.cli.configure import get_entrypoint, log_important_versions
 from brickflow.cli.constants import BrickflowDeployMode
@@ -45,14 +44,18 @@ def get_valid_bundle_cli(bundle_cli: Optional[str]) -> str:
     return bundle_cli
 
 
-@pre_bundle_hook
-def bundle_validate(bundle_cli: Optional[str] = None, **_: Any) -> None:
-    """CLI validate the bundle."""
+def _bundle_validate(bundle_cli: Optional[str], target: str) -> None:
     exec_command(
         get_valid_bundle_cli(bundle_cli),
         "bundle",
-        ["validate", ENV_FLAG, brickflow_ctx.env],
+        ["validate", ENV_FLAG, target],
     )
+
+
+@pre_bundle_hook
+def bundle_validate(bundle_cli: Optional[str] = None, **_: Any) -> None:
+    """CLI validate the bundle."""
+    _bundle_validate(bundle_cli, get_bundles_project_env())
 
 
 @pre_bundle_hook
@@ -106,6 +109,7 @@ def bundle_deploy(
     force_acquire_lock: bool = False,
     auto_approve: bool = False,
     debug: bool = False,
+    skip_validate: bool = False,
     **_: Any,
 ) -> None:
     """CLI deploy the bundle."""
@@ -114,7 +118,8 @@ def bundle_deploy(
         _ilog.warning("No bundle.yml found, skipping deployment.")
         return
 
-    deploy_args = ["deploy", ENV_FLAG, get_bundles_project_env()]
+    target = get_bundles_project_env()
+    deploy_args = ["deploy", ENV_FLAG, target]
     if fail_on_active_runs is True:
         # TODO: Remove the following message once the CLI is upgraded to >= 0.249.0.
         _ilog.info(
@@ -129,6 +134,8 @@ def bundle_deploy(
         deploy_args.append("--auto-approve")
     if debug is True:
         deploy_args.append("--debug")
+    if not skip_validate:
+        _bundle_validate(bundle_cli, target)
     exec_command(get_valid_bundle_cli(bundle_cli), "bundle", deploy_args)
 
 
