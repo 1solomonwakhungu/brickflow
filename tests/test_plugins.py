@@ -97,29 +97,96 @@ class TestBrickflowPlugins:
             cronhelper.cron_helper.quartz_to_unix(quartz_cron)
 
     def test_plugins_dependency_versions(self):
+        from packaging.requirements import Requirement
+        from packaging.specifiers import SpecifierSet
+        from packaging.version import Version
+
         from brickflow import BrickflowProjectDeploymentSettings
         from brickflow.engine.task import get_brickflow_libraries
 
         settings = BrickflowProjectDeploymentSettings()
         settings.brickflow_project_runtime_version = "1.0.0"
 
-        # List of libraries resolved from (dev)dependencies
-        expected_libs = {}
-        with open(
-            str(Path(__file__).parent.parent / "poetry.lock"), "r", encoding="utf-8"
-        ) as f:
-            data = toml.load(f)
-        for lib in data.get("package", []):
-            expected_libs[lib.get("name")] = lib.get("version")
+        root = Path(__file__).parent.parent
+        with open(str(root / "poetry.lock"), "r", encoding="utf-8") as f:
+            lock = toml.load(f)
+        with open(str(root / "pyproject.toml"), "r", encoding="utf-8") as f:
+            constraints = toml.load(f)["tool"]["poetry"]["dependencies"]
 
-        # Libraries used for plugins expected to be available in the dev environment
-        # and should match the versions in poetry.lock to ensure consistency.
+        def python_spec(value: str) -> SpecifierSet:
+            return SpecifierSet("" if value.strip() == "*" else value)
+
+        locked = {}
+        for lib in lock.get("package", []):
+            locked.setdefault(lib["name"], []).append(
+                (
+                    lib["version"],
+                    python_spec(lib.get("python-versions", "*")),
+                )
+            )
+
+        def locked_version(name: str, python: str) -> str:
+            """Return the lock entry an install on ``python`` resolves for ``name``."""
+            candidates = [
+                version for version, pythons in locked[name] if pythons.contains(python)
+            ]
+            constraint = constraints.get(name)
+            if isinstance(constraint, list):
+                (selected,) = [
+                    item
+                    for item in constraint
+                    if SpecifierSet(item["python"]).contains(python)
+                ]
+                versions = SpecifierSet(selected["version"])
+                candidates = [v for v in candidates if versions.contains(v)]
+            assert len(candidates) == 1, f"{name} on {python}: {candidates}"
+            return candidates[0]
+
+        # Libraries used for plugins are installed on clusters and must match the
+        # versions poetry.lock resolves for each supported Python version.
         # NOTE: ``apache-airflow`` was previously included here; it has been
         # removed along with the Airflow dependency.
+        requirements = [
+            Requirement(lib.package)
+            for lib in get_brickflow_libraries(enable_plugins=True)
+            if not lib.package.startswith("brickflows")
+        ]
+        names = {req.name for req in requirements}
+        for python in ("3.9", "3.10", "3.11", "3.12"):
+            env = {"python_version": python, "python_full_version": f"{python}.0"}
+            active = [
+                req
+                for req in requirements
+                if req.marker is None or req.marker.evaluate(env)
+            ]
+            assert sorted(req.name for req in active) == sorted(names), python
+            for req in active:
+                (spec,) = list(req.specifier)
+                assert spec.operator == "==", req
+                expected = locked_version(req.name, python)
+                assert Version(spec.version) == Version(expected), (
+                    f"Version mismatch for {req.name} on Python {python}: "
+                    f"expected {expected}, got {spec.version}"
+                )
+
+    def test_plugins_dependency_versions_installed(self):
+        """The pins for this interpreter match the installed dev environment."""
+        from importlib import metadata
+
+        from packaging.requirements import Requirement
+
+        from brickflow.engine.task import get_brickflow_libraries
+
         for lib in get_brickflow_libraries(enable_plugins=True):
-            name, version = lib.package.split("==")
-            if name != "brickflows":
-                assert name in expected_libs
-                assert (
-                    version == expected_libs[name]
-                ), f"Version mismatch for {name}: expected {expected_libs[name]}, got {version}"
+            if lib.package.startswith("brickflows"):
+                continue
+            req = Requirement(lib.package)
+            if req.marker is not None and not req.marker.evaluate():
+                continue
+            try:
+                installed = metadata.version(req.name)
+            except metadata.PackageNotFoundError:
+                pytest.skip(f"{req.name} is not installed")
+            assert req.specifier.contains(
+                installed, prereleases=True
+            ), f"{req.name}: installed {installed}, cluster pin {req.specifier}"

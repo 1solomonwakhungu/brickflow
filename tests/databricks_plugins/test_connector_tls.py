@@ -355,13 +355,19 @@ class TestTableauCredentials:
 
     def test_password_absent_from_sign_in_failure(self, mocker, logs):
         server_cls = mocker.patch.object(tableau.TSC, "Server")
-        server_cls.return_value.auth.sign_in.side_effect = RuntimeError("denied")
+        server_cls.return_value.auth.sign_in.side_effect = RuntimeError(
+            f"denied {TABLEAU_SENTINEL}"
+        )
         wrapper = tableau.TableauWrapper(
             **{k: v for k, v in _operator_kwargs().items() if k != "project"}
         )
-        with pytest.raises(RuntimeError) as excinfo:
+        with pytest.raises(tableau.TableauSignInError) as excinfo:
             wrapper.refresh_workbooks(["wb"])
         assert TABLEAU_SENTINEL not in _format(excinfo.value)
+        assert str(excinfo.value) == (
+            "Tableau sign-in failed (RuntimeError); server response omitted"
+        )
+        assert excinfo.value.original_type == "RuntimeError"
         assert TABLEAU_SENTINEL not in logs()
 
     def test_ca_bundle_passed_to_tableau_client(self, mocker):

@@ -3,6 +3,14 @@ from datetime import datetime
 
 import pytest
 
+from brickflow_plugins.operators import tableau_refresh_operator as tableau
+
+TSC = tableau.TSC
+
+pytestmark = pytest.mark.skipif(
+    TSC is None, reason="tableauserverclient is not installed"
+)
+
 
 class TestTableauWrapper:
     @pytest.fixture(autouse=True, name="tableau_server")
@@ -34,14 +42,25 @@ class TestTableauWrapper:
             obj.project_id = f"{object_id}"
             return obj
 
-        def create_mock_pagination(length: int):
-            obj = mocker.MagicMock()
-            obj.total_available = length
-            return obj
+        class Endpoint:
+            """Endpoint shaped like tableauserverclient's.
+
+            ``get`` returns real ``PaginationItem`` objects because ``TSC.Pager``
+            compares page counts, and a fresh list per call because older
+            ``Pager`` versions consume the list they are given. The object is
+            not callable, so every ``Pager`` version pages through ``get``.
+            """
+
+            def __init__(self, items: list):
+                self.items = items
+                self.refresh = mocker.MagicMock()
+
+            def get(self, *_args, **_kwargs):
+                items = self.items
+                return list(items), TSC.PaginationItem.from_single_page_list(items)
 
         # Projects
         mock_projects = []
-        mock_projects_pagination = mocker.MagicMock()
 
         def create_mock_project(
             name_prefix: str,
@@ -88,28 +107,19 @@ class TestTableauWrapper:
             )
         )
 
-        mock_projects_pagination.total_available = len(mock_projects)
-
-        self.mock_server.projects.get.return_value = [
-            mock_projects,
-            mock_projects_pagination,
-        ]
+        self.mock_server.projects = Endpoint(mock_projects)
 
         # Data Sources
         mock_ds = create_mock_object("datasource", 1)
         mock_conn = create_mock_object("connection", 1)
         mock_conn.type = "baz"
         mock_ds.connections = [mock_conn]
-        self.mock_server.datasources.get.return_value = [
-            [mock_ds],
-            create_mock_pagination(1),
-        ]
+        self.mock_server.datasources = Endpoint([mock_ds])
 
         # Workbooks
-        self.mock_server.workbooks.get.return_value = [
-            [create_mock_object("workbook", 1)],
-            create_mock_pagination(1),
-        ]
+        self.mock_workbook = create_mock_object("workbook", 1)
+        self.mock_server.workbooks = Endpoint([self.mock_workbook])
+        self.mock_datasource = mock_ds
 
     def test__get_working_project__not_set(self):
         assert not self.tableau_wrapper._get_working_project()
@@ -146,6 +156,15 @@ class TestTableauWrapper:
     def test_refresh_workbooks(self):
         r = self.tableau_wrapper.refresh_workbooks(work_books=["workbook-1"])
         assert r[0]["work_book"] == "workbook-1"
+        # Positional: the parameter is ``workbook_id`` in 0.25 and
+        # ``workbook_item`` from 0.34 on.
+        self.mock_server.workbooks.refresh.assert_called_once_with(self.mock_workbook)
+
+    def test_refresh_data_sources_positional(self):
+        self.tableau_wrapper.refresh_datasources(data_sources=["datasource-1"])
+        self.mock_server.datasources.refresh.assert_called_once_with(
+            self.mock_datasource
+        )
 
     def test__get_job_status(self, mocker):
         Scenario = namedtuple(

@@ -1295,11 +1295,22 @@ def get_brickflow_libraries(enable_plugins: bool = False) -> List[TaskLibrary]:
 
     # IMPORTANT: Make sure that library versions in this function are aligned with the versions
     # from poetry.lock / pyproject.toml. This set of libraries is also validated through tests/test_plugins.py
+    # tableauserverclient and snowflake-connector-python resolve differently per Python version
+    # (see pyproject.toml), so they are pinned with PEP 508 environment markers; pip installs only the
+    # entry matching the cluster's Python. The snowflake package leaves the connector unpinned, and
+    # without these pins pip would pick a release with GHSA-5cc2-282f-jjq2 on Python 3.9.
     if settings.brickflow_enable_plugins is True or enable_plugins is True:
         return [
             bf_lib,
             PypiTaskLibrary("snowflake==1.5.1"),
-            PypiTaskLibrary("tableauserverclient==0.25"),
+            PypiTaskLibrary(
+                'snowflake-connector-python==3.18.1; python_version < "3.10"'
+            ),
+            PypiTaskLibrary(
+                'snowflake-connector-python==4.8.0; python_version >= "3.10"'
+            ),
+            PypiTaskLibrary('tableauserverclient==0.25; python_version < "3.10"'),
+            PypiTaskLibrary('tableauserverclient==0.41; python_version >= "3.10"'),
             PypiTaskLibrary("boxsdk==3.13.0"),
             PypiTaskLibrary("cerberus-python-client==2.5.4"),
         ]

@@ -13,9 +13,14 @@ import concurrent.futures
 import os
 import time
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Any, Dict, Optional, Union
+from typing import TYPE_CHECKING, Any, Callable, Dict, Optional, Union
 
 from brickflow_plugins import log
+from brickflow_plugins._origin_policy import (
+    Origin,
+    OriginBoundSession,
+    https_origin,
+)
 
 if TYPE_CHECKING:
     import tableauserverclient as TSC  # noqa: F401 -- only for type hints
@@ -33,19 +38,23 @@ _TABLEAU_INSTALL_HINT = """You must install tableauserverclient library to use T
     Entrypoint:
         with Project(
             ... 
-            libraries=[PypiTaskLibrary(package="tableauserverclient==0.25")]
+            libraries=[PypiTaskLibrary(package="tableauserverclient==0.41")]
             ...
         )
     Workflow:
         wf=Workflow(
             ...
-            libraries=[PypiTaskLibrary(package="tableauserverclient==0.25")]
+            libraries=[PypiTaskLibrary(package="tableauserverclient==0.41")]
             ...
         )
     Task:
-        @wf.task(Library=[PypiTaskLibrary(package="tableauserverclient==0.25")]
+        @wf.task(Library=[PypiTaskLibrary(package="tableauserverclient==0.41")]
         def run_snowflake_queries(*args):
             ...
+
+    Use tableauserverclient 0.41 on Python 3.10+ clusters and a release from
+    0.25 to 0.38 on Python 3.9 clusters (0.39 is yanked and 0.40 does not
+    import on Python 3.9).
     """
 
 
@@ -98,6 +107,19 @@ def _resolve_tls_verify(
     return ca_path
 
 
+def _tableau_session_factory(
+    origin: Origin, verify: Union[bool, str]
+) -> Callable[[], OriginBoundSession]:
+    """Return a ``session_factory`` for ``TSC.Server`` bound to ``origin``."""
+
+    def _make_session() -> OriginBoundSession:
+        session = OriginBoundSession(origin)
+        session.verify = verify
+        return session
+
+    return _make_session
+
+
 class _WrapperOptions(Dict[str, Any]):
     """Wrapper options whose text representation masks secret values.
 
@@ -123,6 +145,26 @@ class TableauRefreshException(Exception):
 
 class TableauRefreshEmptyException(Exception):
     pass
+
+
+class TableauSignInError(Exception):
+    """Tableau sign-in failed for a reason other than a transport error.
+
+    Raised in place of the ``tableauserverclient`` exception (for example
+    ``FailedSignInError``, ``ServerResponseError`` or ``NonXMLResponseError``)
+    so server-supplied text is omitted. The message keeps only the original
+    exception type name, never a response body that might reflect credentials.
+    The original exception is neither chained
+    nor kept as implicit context.
+    Transport errors (``OSError`` and its ``requests`` subclasses such as
+    ``requests.exceptions.SSLError`` and
+    :class:`~brickflow_plugins._origin_policy.CrossOriginRequestError`) are
+    not wrapped.
+    """
+
+    def __init__(self, message: str, original_type: str) -> None:
+        super().__init__(message)
+        self.original_type = original_type
 
 
 class TableauWrapper:
@@ -155,7 +197,9 @@ class TableauWrapper:
         Parameters
         ----------
         server : str
-            Tableau server address, e.g. ``https://tableau-server.com``.
+            Tableau server address, e.g. ``https://tableau-server.com``. Must be
+            an ``https://`` URL. Every request, including redirects, is limited
+            to this URL's scheme, host and port.
         username : str
             Log in username.
         password : str
@@ -187,6 +231,7 @@ class TableauWrapper:
             HTTPS verification has no bypass option.
         """
         _ensure_tableau()
+        https_origin(server)
         self.server = server
         self.version = version
         self.username = username
@@ -226,13 +271,35 @@ class TableauWrapper:
             super().__init__(self.message)
 
     def _authenticate(self):
-        """Authenticate on the Tableau server with certificate verification."""
+        """Authenticate on the Tableau server.
+
+        The client's session sends only to the HTTPS origin of ``server``,
+        verifies certificates and refuses cross-origin redirects before any
+        credentials are sent. Sign-in failures other than transport errors are
+        re-raised as :class:`TableauSignInError` without server-supplied text.
+        """
+        origin = https_origin(self.server)
         self._authenticator = TSC.TableauAuth(self.username, self.password, self.site)
-        self._server = TSC.Server(self.server)
+        self._server = TSC.Server(
+            self.server, session_factory=_tableau_session_factory(origin, self._verify)
+        )
         self._server.version = self.version
         self._server.add_http_options({"verify": self._verify})
 
-        return self._server.auth.sign_in(self._authenticator)
+        try:
+            return self._server.auth.sign_in(self._authenticator)
+        except OSError:
+            # Preserve transport exception types for callers. These errors may
+            # contain response text; they are outside response omission.
+            raise
+        except Exception as exc:  # pylint: disable=broad-except
+            original_type = type(exc).__name__
+        # Raised outside the handler so the unredacted exception is neither the
+        # cause nor the implicit context of the error callers see.
+        raise TableauSignInError(
+            f"Tableau sign-in failed ({original_type}); server response omitted",
+            original_type,
+        )
 
     def _get_job_status(self, job_id: str) -> dict:
         """
@@ -296,7 +363,8 @@ class TableauWrapper:
     def _refresh_datasource(self, ds: "TSC.DatasourceItem") -> dict:
         """Trigger refresh of the specific data source and poll for completion."""
         self._logger.info(f"Triggering refresh of '{ds.name}' datasource...")
-        response = self._server.datasources.refresh(datasource_item=ds)
+        # Positional: the parameter name differs across tableauserverclient versions.
+        response = self._server.datasources.refresh(ds)
         job_status = self._get_job_status(job_id=response.id)
         self._logger.info(f"Data source '{ds.name}' refresh status: {job_status}!")
         return {"data_source": ds.name, **job_status}
@@ -304,7 +372,8 @@ class TableauWrapper:
     def _refresh_workbook(self, wb: "TSC.WorkbookItem") -> dict:
         """Trigger refresh of the specific workbook and poll for completion."""
         self._logger.info(f"Triggering refresh of '{wb.name}' workbook...")
-        response = self._server.workbooks.refresh(workbook_id=wb)
+        # Positional: 0.25 names this parameter ``workbook_id``, 0.34+ ``workbook_item``.
+        response = self._server.workbooks.refresh(wb)
         job_status = self._get_job_status(job_id=response.id)
         self._logger.info(f"Workbook '{wb.name}' refresh status: {job_status}!")
         return {"work_book": wb.name, **job_status}
@@ -451,6 +520,7 @@ class TableauRefreshABCOperator(ABC):
         _ensure_tableau()
         self._logger = log
         # Validate early so misconfiguration fails before any connection.
+        https_origin(server)
         _resolve_tls_verify(ca_bundle)
 
         self.wrapper_options = _WrapperOptions(

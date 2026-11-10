@@ -870,17 +870,21 @@ def autosys_sensor():
 #### TLS certificate verification
 
 `AirflowCluster`, `AutosysSensor`, and the Tableau refresh operators verify
-certificates for HTTPS connections. Configure HTTPS endpoints: plaintext HTTP
-URLs remain accepted and provide no TLS protection. If a server uses a private
+certificates for HTTPS connections. `AirflowCluster` and `AutosysSensor` still
+accept plaintext HTTP URLs, which provide no TLS protection; configure HTTPS
+endpoints. The Tableau operators accept only `https://` server URLs. If a server uses a private
 certificate authority, pass a PEM CA bundle or OpenSSL hashed certificate
 directory with `ca_bundle`, or set `REQUESTS_CA_BUNDLE` on the cluster.
 The connector options do not expose a verification bypass. An untrusted HTTPS
 certificate raises `requests.exceptions.SSLError` before HTTP credentials are
 sent to that peer; an invalid CA path can instead raise `OSError`.
 
-Certificate verification does not restrict redirect destinations. In particular,
-the Tableau client may forward sign-in credentials to a redirected endpoint.
-Use trusted endpoints with controlled redirects.
+Certificate verification does not restrict redirect destinations. For
+`AirflowCluster` and `AutosysSensor`, use trusted endpoints with controlled
+redirects. The Tableau operators restrict every request, redirects included, to
+the scheme, host and port of `server` and raise `CrossOriginRequestError`
+before sending to any other origin; same-origin redirects still work. See
+[Tableau Refresh Operators](api/airflow_tableau_operators.md).
 
 #### Workflow Dependency Sensor
 
@@ -949,6 +953,17 @@ As databricks secrets is a key value store, code expects the secret scope to con
 - `warehouse`: warehouse/cluster information that user has access for ex: sample_warehouse  
 - `database` : default database that we want to connect for ex: sample_database  
 - `role`     : role to which the user has write access for ex: sample_write_role
+
+The operator keeps the Snowflake connector's OCSP certificate revocation
+check on in fail-open mode on every supported connector release (connector
+4.8 otherwise turns it off). On Python 3.9 the `snowflake` extra installs
+connector 3.18.x, whose diagnostic logs can expose session secrets
+(GHSA-qqj6-54q6-cxv6), including error paths. Disabling DEBUG logging alone
+is insufficient; restrict access to logs and follow the advisory's guidance
+for deleting affected historical logs. Use Python 3.10+ for the fixed
+connector. OCSP mode is process-wide, including subsequent connections on a
+shared driver. See
+[Dependency security](dependency-security.md#snowflake-extra).
 
 SnowflakeOperator can accept the following as inputs
 
@@ -1078,10 +1093,12 @@ Data source 'my-datasource' refresh status:
 If refresh fails, `job_status_details` will contain the error message retrieved from the server and the operator will
 fail. If fail behavior is not desired, `fail_operator = False` can be set in the operator parameters.
 
-Tableau HTTPS certificates are verified; pass `ca_bundle` for a private certificate authority
-(see [TLS certificate verification](#tls-certificate-verification)). The password field is masked in the
-wrapper option log and text representations. Server error messages are propagated and may contain
-sensitive response text; this masking does not sanitize those errors.
+`server` must be an `https://` URL; Tableau HTTPS certificates are verified, and you can pass `ca_bundle`
+for a private certificate authority (see [TLS certificate verification](#tls-certificate-verification)).
+Requests, including redirects, are limited to the origin of `server`. The password field is masked in
+the wrapper option log and text representations. Sign-in failures other than transport errors raise
+`TableauSignInError` with all server response text omitted; errors after sign-in are
+propagated as the server sent them.
 
 ```python title="tableau_refresh_operators"
 from brickflow.context import ctx

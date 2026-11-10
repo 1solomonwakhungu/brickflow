@@ -25,6 +25,18 @@ minimum = "2026.10.18"
 reason = "GHSA-6q48-6c7w-9gw2: compromised emSign intermediate CA keys."
 
 [[floor]]
+package = "urllib3"
+minimum = "2.8.0"
+python = ["3.10", "3.11", "3.12"]
+reason = "Streaming decompression, chunk parsing and proxy TLS advisories fixed through 2.8.0."
+
+[[floor]]
+package = "urllib3"
+minimum = "1.26.20"
+python = ["3.9"]
+reason = "Newest release compatible with botocore and snowflake-connector-python on Python 3.9."
+
+[[floor]]
 package = "requests"
 minimum = "2.33.0"
 python = ["3.10", "3.11", "3.12"]
@@ -41,34 +53,45 @@ package = "jinja2"
 minimum = "3.1.6"
 reason = "GHSA-cpwx-vrp4-4pq7."
 
-# ---------------------------------------------------------------------------
-# urllib3 1.26.20 (DEP-02).
-# ---------------------------------------------------------------------------
-
-[[exception]]
-package = "urllib3"
-scopes = ["runtime", "extra:all-plugins", "extra:box", "extra:cerberus", "extra:snowflake", "extra:tableau"]
-versions = ["1.26.20"]
+[[floor]]
+package = "tableauserverclient"
+minimum = "0.41"
 python = ["3.10", "3.11", "3.12"]
-advisories = [
-    "GHSA-2xpw-w6gg-jr37",
-    "GHSA-gm62-xv2j-4w53",
-    "GHSA-38jv-5279-wg99",
-    "GHSA-vxq7-64xx-v4gw",
-    "GHSA-pq67-6m6q-mj2v",
-    "GHSA-qccp-gfcp-xxvc",
-    "GHSA-8988-9cw3-xx77",
-]
-classification = "deferred-upgrade"
-review_by = 2026-12-15
-reason = """
-Python 3.10-3.12. tableauserverclient 0.25 (tableau extra and the plugin
-library list Brickflow installs on Databricks clusters) requires
-urllib3 ~= 1.26.8, which holds the whole lock on 1.26.20. Reachable:
-Brickflow's artifact download streams through requests/urllib3. Fixed by the
-DEP-02 change (tableauserverclient 0.41, urllib3 >= 2.8.0), which needs the
-cluster library list in brickflow/engine/task.py updated in the same release.
-"""
+reason = "Moves the Tableau extra off the urllib3 1.26 pin (DEP-02)."
+
+[[floor]]
+package = "snowflake-connector-python"
+minimum = "3.18.1"
+python = ["3.9"]
+reason = "GHSA-5cc2-282f-jjq2 (TLS hostname verification); 4.7.3 requires Python 3.10."
+
+[[floor]]
+package = "snowflake-connector-python"
+minimum = "4.7.3"
+python = ["3.10", "3.11", "3.12"]
+reason = "GHSA-5cc2-282f-jjq2 (fixed in 4.7.1) and GHSA-qqj6-54q6-cxv6 (fixed in 4.7.3)."
+
+[[floor]]
+package = "cryptography"
+minimum = "50.0.0"
+python = ["3.10", "3.11", "3.12"]
+reason = "Bundled OpenSSL, PKCS#7, path-building, name-constraint and subgroup advisories fixed through 50.0.0."
+
+[[floor]]
+package = "pyopenssl"
+minimum = "26.0.0"
+python = ["3.10", "3.11", "3.12"]
+reason = "GHSA-5pwr-322w-8jr4 and GHSA-vp96-hxj8-p424."
+
+[[floor]]
+package = "filelock"
+minimum = "3.20.3"
+python = ["3.10", "3.11", "3.12"]
+reason = "GHSA-qmgc-5h2g-mvrw and GHSA-w853-jp5j-5j7f."
+
+# ---------------------------------------------------------------------------
+# Python 3.9: blocked by other supported extras, not fixed.
+# ---------------------------------------------------------------------------
 
 [[exception]]
 package = "urllib3"
@@ -112,29 +135,34 @@ inside a zip archive. Brickflow does not call it or ship zipped CA bundles.
 """
 
 # ---------------------------------------------------------------------------
-# Snowflake extra: fixes need a Snowflake connector upgrade (separate change).
+# Snowflake extra. Python 3.10-3.12 resolve connector 4.8.0, cryptography
+# 50.0.2 and pyOpenSSL 26.4.0, which have no open advisories. What remains is
+# Python 3.9, where no fixed release installs, and filelock, which the 4.x
+# connector caps below 4.
 # ---------------------------------------------------------------------------
 
 [[exception]]
 package = "snowflake-connector-python"
-versions = ["3.13.2"]
-python = ["3.9", "3.10", "3.11", "3.12"]
+versions = ["3.18.1"]
+python = ["3.9"]
 scopes = ["extra:snowflake", "extra:all-plugins"]
-advisories = ["GHSA-5cc2-282f-jjq2", "GHSA-qqj6-54q6-cxv6"]
-classification = "deferred-upgrade"
-review_by = 2026-12-15
+advisories = ["GHSA-qqj6-54q6-cxv6"]
+classification = "compatibility-blocked"
+review_by = 2027-01-31
 reason = """
-Reachable when the Snowflake plugin connects: GHSA-5cc2 (critical) lets an
-on-path attacker bypass TLS hostname verification. Fixed in 3.18.1 (Python
-3.9) and 4.7.1+ (Python 3.10+, a major-version upgrade that also raises the
-cryptography floor). Track as a separate Snowflake upgrade; do not extend this
-exception without that decision.
+Python 3.9 lane only. 3.18.1 fixes GHSA-5cc2-282f-jjq2, but the log-redaction
+fix for GHSA-qqj6 exists only in 4.7.3+, which requires Python 3.10; 4.0-4.5
+still install on 3.9 and are vulnerable to GHSA-5cc2, so 3.9 stays on 3.18.x.
+Reachable when the Snowflake operators connect and connector logging reaches
+DEBUG (SQL text, result-encryption keys) or certain ERROR paths: anyone who
+can read those logs may obtain session tokens or keys. Brickflow does not
+raise the connector's log level. Fixed by moving the job to Python 3.10+.
 """
 
 [[exception]]
 package = "cryptography"
 versions = ["43.0.3"]
-python = ["3.9", "3.10", "3.11", "3.12"]
+python = ["3.9"]
 scopes = ["extra:snowflake", "extra:all-plugins"]
 advisories = [
     "GHSA-537c-gmf6-5ccf",
@@ -144,30 +172,38 @@ advisories = [
     "GHSA-m959-cc7f-wv43",
     "GHSA-r6ph-v2qm-q3c2",
 ]
-classification = "deferred-upgrade"
-review_by = 2026-12-15
+classification = "compatibility-blocked"
+review_by = 2027-01-31
 reason = """
-Pinned below 45 by pyOpenSSL 24.3.0, which snowflake-connector-python 3.13.2
-requires. Moves with the Snowflake connector upgrade.
+Python 3.9 lane only. cryptography 44+ excludes Python 3.9.0 and 3.9.1, and
+connector 3.18.x requires pyOpenSSL < 26, which caps cryptography below 47;
+the fixes for 537c (bundled OpenSSL, reachable through the connector's TLS
+and OCSP code) and jwv3 need 48.0.1/49.0.0. A fresh pip install on 3.9.2+
+gets pyOpenSSL 25.3.0 with cryptography 46.0.0 (46.0.1+ needs cffi 2, which
+the connector excludes), which still has 537c and jwv3. m2h6 is
+listed because PYSEC-2026-3554 marks every release below 49.0.0 as affected
+(the GHSA record starts at 45.0.0). Fixed on Python 3.10+ (50.0.2 in the
+lock).
 """
 
 [[exception]]
 package = "pyopenssl"
 versions = ["24.3.0"]
-python = ["3.9", "3.10", "3.11", "3.12"]
+python = ["3.9"]
 scopes = ["extra:snowflake", "extra:all-plugins"]
 advisories = ["GHSA-5pwr-322w-8jr4", "GHSA-vp96-hxj8-p424"]
-classification = "deferred-upgrade"
-review_by = 2026-12-15
+classification = "compatibility-blocked"
+review_by = 2027-01-31
 reason = """
-snowflake-connector-python 3.x requires pyOpenSSL < 26. Brickflow does not use
-DTLS or SNI callbacks itself. Moves with the Snowflake connector upgrade.
+Python 3.9 lane only: connector 3.18.x requires pyOpenSSL < 26 and the fixes
+are in 26.0.0. Neither Brickflow nor the connector uses DTLS cookie callbacks
+(5pwr) or a servername callback (vp96). Fixed on Python 3.10+ (26.4.0).
 """
 
 [[exception]]
 package = "filelock"
 versions = ["3.19.1"]
-python = ["3.9", "3.10", "3.11", "3.12"]
+python = ["3.9"]
 scopes = ["extra:snowflake", "extra:all-plugins"]
 advisories = [
     "GHSA-69hj-f68j-2879",
@@ -175,10 +211,30 @@ advisories = [
     "GHSA-qmgc-5h2g-mvrw",
     "GHSA-w853-jp5j-5j7f",
 ]
-classification = "deferred-upgrade"
-review_by = 2026-12-15
+classification = "compatibility-blocked"
+review_by = 2027-01-31
 reason = """
-Local lock-file races in the Snowflake connector's cache; fixed releases need
-Python 3.10 (3.20.x) or 3.11 (4.2.x) and the connector caps filelock below 4.
-Moves with the Snowflake connector upgrade.
+Python 3.9 lane only: 3.19.1 is the newest filelock for Python 3.9. The
+connector locks its OCSP/CRL cache with FileLock; these are local races and
+symlink or permission issues in that cache directory, exploitable by another
+local user who can write there. 8mx5 is Windows-only.
+"""
+
+[[exception]]
+package = "filelock"
+versions = ["3.20.3"]
+python = ["3.10", "3.11", "3.12"]
+scopes = ["extra:snowflake", "extra:all-plugins"]
+advisories = ["GHSA-69hj-f68j-2879", "GHSA-8mx5-7m5m-r77g"]
+classification = "deferred-upgrade"
+review_by = 2027-01-31
+reason = """
+Both are fixed only in filelock 4.2.1, which requires Python 3.11, and
+snowflake-connector-python 4.x requires filelock < 4. Connector 5.x drops
+filelock but is a separate major upgrade that requires Python 3.11, so
+Python 3.10 has no fixed route. The connector uses FileLock only on its
+OCSP/CRL cache: 69hj needs another local user who can rename or link files
+in that directory; 8mx5 is Windows-only. The lock keeps 3.20.3, the newest
+release before the ReadWriteLock/SoftFileLock code that has further
+advisories.
 """

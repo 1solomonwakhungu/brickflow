@@ -820,31 +820,55 @@ def test_task_success_on_a_later_page_is_accepted():
 # --- Late results: evaluation runs inside the bound and is checked on accept
 
 
-def test_slow_run_evaluation_times_out_instead_of_succeeding():
-    # 24 non-matching runs followed by a successful one; logging each run
-    # takes 50 ms, so evaluation cannot finish within the 0.07 s budget.
+@pytest.mark.parametrize("startup_delay", [0, 0.1])
+def test_slow_run_evaluation_times_out_instead_of_succeeding(
+    fake_clock, monkeypatch, startup_delay
+):
+    # Start the evaluation before spending its budget. Startup delay must not
+    # turn this into a test of a timeout during an earlier SDK lookup.
     runs = [{"run_id": i, "state": {"result_state": "FAILED"}} for i in range(24)]
     runs.append({"run_id": 99, "state": {"result_state": "SUCCESS"}})
     calls = []
     logged = []
+    entered = threading.Event()
+    release = threading.Event()
 
     def slow_info(message, *_args):
         logged.append(message)
-        time.sleep(0.05)
+        entered.set()
+        assert release.wait(5), "test did not release the blocked logger"
 
     sensor = make_sensor("https://synthetic.invalid", timeout_seconds=0.02)
     sensor._final_poll_grace_seconds = 0.05
     sensor.log = SimpleNamespace(info=slow_info)
-    install_session(sensor, scripted_session({"runs": runs}, calls))
+    session = scripted_session({"runs": runs}, calls)
+    real_start = threading.Thread.start
 
-    elapsed, _ = timed_execute(sensor)
-    at_timeout = len(logged)
-    assert wait_for(lambda: ABANDONED_CALLS.count == 0)
+    def start_after_handshake(worker):
+        time.sleep(startup_delay)
+        real_start(worker)
+        assert entered.wait(5), "evaluation did not reach the blocked logger"
+        fake_clock.now = 1
 
-    assert elapsed < 0.07 + SCHEDULING_TOLERANCE
-    assert len(calls) == 1
-    # The abandoned worker stops at the next run instead of logging them all.
-    assert len(logged) <= at_timeout + 1
+    monkeypatch.setattr(threading.Thread, "start", start_after_handshake)
+    try:
+        with pytest.raises(WorkflowDependencySensorTimeOutException):
+            sensor._call_before_deadline(
+                sensor._evaluate_runs_page,
+                session,
+                "https://synthetic.invalid/api/2.1/jobs/runs/list",
+                {},
+                {"Authorization": f"Bearer {TOKEN}"},
+            )
+        assert sensor._abandoned.is_set()
+        assert len(calls) == 1
+        assert len(logged) == 1
+    finally:
+        release.set()
+        assert wait_for(lambda: ABANDONED_CALLS.count == 0)
+
+    # The worker must stop at the next run after its logger is released.
+    assert len(logged) == 1
     assert not any("Found a successful run" in message for message in logged)
 
 
