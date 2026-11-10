@@ -190,7 +190,7 @@ exceptions that no longer match anything, so remove them when the fix lands.
 
 | Item | Scope | Status |
 |---|---|---|
-| urllib3 1.26.20 and requests 2.32.5 advisories | all scopes, Python 3.9 | `compatibility-blocked` |
+| urllib3 1.26.20 and requests 2.32.5 advisories | runtime and the box, cerberus, snowflake, tableau and all-plugins extras, Python 3.9 | `compatibility-blocked`; exposure through any other blocking scope needs a policy change |
 | snowflake-connector-python 3.13.2: GHSA-5cc2-282f-jjq2 (critical TLS hostname check), GHSA-qqj6-54q6-cxv6 | snowflake extra | `deferred-upgrade`, review by 2026-12-15. Fixed in 3.18.1 (Python 3.9) and 4.7.1+ (Python 3.10+, major upgrade) |
 | cryptography 43.0.3, pyOpenSSL 24.3.0, filelock 3.19.1 | snowflake extra | `deferred-upgrade`; move with the connector |
 | development and documentation tools | `dev`, `docs` groups | reported only |
