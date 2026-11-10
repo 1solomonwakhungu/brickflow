@@ -408,3 +408,70 @@ class TestContextIntegration:
 
 
 _BEFORE_LEAK: list = []
+
+
+@pytest.mark.parametrize("number", ["1e999", "-1e999", "1" * 5000 + ".0"])
+def test_untagged_float_overflow_is_refused(number):
+    with pytest.raises(TaskValueSerializationError):
+        decode_task_value(PREFIX + number + "}")
+
+
+@pytest.mark.parametrize(
+    "tag", ["bytes", "datetime", "date", "time", "decimal", "uuid", "float"]
+)
+def test_scalar_tags_require_string_payloads(tag):
+    with pytest.raises(TaskValueSerializationError):
+        decode_task_value(PREFIX + json.dumps({"$bf": tag, "v": []}) + "}")
+
+
+def test_wide_json_is_rejected_before_parser_allocation(mocker):
+    parser = mocker.patch("brickflow.context.context.json.loads", wraps=json.loads)
+    wire = PREFIX + "[" + ",".join(["0"] * 1000) + "]}"
+    with pytest.raises(TaskValueSerializationError):
+        decode_task_value(wire, TaskValueLimits(max_items=2))
+    parser.assert_not_called()
+
+
+@pytest.mark.parametrize("rule", ["ALL_SUCCESS", "NONE_FAILED"])
+@pytest.mark.parametrize("wire_kind", ["legacy", "malformed", "future"])
+def test_invalid_branch_marker_stops_consumption(rule, wire_kind):
+    from types import SimpleNamespace
+    from brickflow.engine.task import Task, BrickflowTriggerRule
+
+    if wire_kind == "legacy":
+        wire = base64.b64encode(
+            pickle.dumps(BrickflowTaskComsObject._TaskComsObject("chosen"))
+        ).decode()
+    elif wire_kind == "malformed":
+        wire = PREFIX + "[}"
+    else:
+        wire = '{"__brickflow_task_value__":99,"value":"chosen"}'
+    ctx._task_coms = BrickflowTaskComs()
+    ctx._task_coms.storage["parent::" + BRANCH_SKIP_EXCEPT] = wire
+    child = SimpleNamespace(
+        parents=["parent"],
+        name="unselected",
+        trigger_rule=getattr(BrickflowTriggerRule, rule),
+        _get_skip_with_reason=Task._get_skip_with_reason,
+    )
+    with pytest.raises(TaskValueSerializationError):
+        Task.should_skip(child)
+
+
+@pytest.mark.parametrize("rule", ["ALL_SUCCESS", "NONE_FAILED"])
+def test_valid_and_absent_branch_decisions_remain_compatible(rule):
+    from types import SimpleNamespace
+    from brickflow.engine.task import Task, BrickflowTriggerRule
+
+    ctx._task_coms = BrickflowTaskComs()
+    child = SimpleNamespace(
+        parents=["parent"],
+        name="unselected",
+        trigger_rule=getattr(BrickflowTriggerRule, rule),
+        _get_skip_with_reason=Task._get_skip_with_reason,
+    )
+    assert Task.should_skip(child) == (False, None)
+    ctx._task_coms.put("parent", BRANCH_SKIP_EXCEPT, "chosen")
+    assert Task.should_skip(child)[0] is True
+    ctx._task_coms.put("parent", BRANCH_SKIP_EXCEPT, "unselected")
+    assert Task.should_skip(child) == (False, None)

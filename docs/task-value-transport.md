@@ -86,8 +86,9 @@ Set `BRICKFLOW_TASK_VALUES_LEGACY_PICKLE` on the consuming task's cluster or env
 | `read` | JSON | unpickled, with a warning |
 | `read_write` | legacy pickle | unpickled, with a warning |
 
-Any other value raises `ValueError` rather than guessing. Every legacy encode or decode emits
-`LegacyPickleTaskValueWarning` and a log warning. Only enable it while every task that can write the value is
+Other settings raise `ValueError` when encoding or reading recognized legacy data.
+Each legacy operation first emits `LegacyPickleTaskValueWarning`, then logs a warning.
+A warnings-as-errors policy stops the operation before the log or pickle operation. Only enable it while every task that can write the value is
 trusted to run code in the consumer, and remove it after migration.
 
 ## Migration
@@ -104,8 +105,8 @@ Action is needed when versions are mixed:
 - **New producer, old consumer**: the old consumer does not understand the JSON envelope. Upgrade consumers
   first, or set `BRICKFLOW_TASK_VALUES_LEGACY_PICKLE=read_write` on the producer during the rollout.
 - **Values of unsupported types**: tasks that returned arbitrary objects (task return values are pushed by
-  default) now fail at `put`. Return a supported type, or use `string_serialization=True` with a JSON-compatible
-  value.
+  default) now fail at `put`. Return a supported type. Explicit `put`/`get` callers may use
+  `string_serialization=True` with a JSON-compatible value on both sides; this does not change automatic returns.
 
 ## Compatibility notes
 
@@ -117,3 +118,30 @@ Action is needed when versions are mixed:
 - Error types live in `brickflow.context.context`: `TaskValueSerializationError`,
   `LegacyPickleTaskValueError`, `LegacyPickleTaskValueWarning`, `TaskValueLegacyPickleMode` and
   `TaskValueLimits`.
+
+## Branch decisions and strict decoding
+
+An absent branch marker retains the existing behavior. A refused legacy marker,
+malformed JSON envelope or unsupported envelope version raises a transport error
+from branch evaluation, stopping the consumer instead of running an unselected
+task. This applies to ALL_SUCCESS and NONE_FAILED. During mixed-version rollouts,
+upgrade consumers first and explicitly enable trusted legacy reading where needed;
+upgrade producers afterward. Old consumers cannot interpret JSON branch markers.
+For repair runs, rerun old producers or temporarily use the documented trusted
+legacy mode. Rollback requires compatible producer and consumer formats together.
+
+The JSON parser has a conservative preflight structural-node budget of eight times
+`max_items` plus four envelope nodes; the exact logical item limit is enforced
+after parsing. Numeric token length is bounded before conversion, and untagged
+floating overflow is refused. Size limits count Python characters, not UTF-8 bytes.
+Encoding limits constrain accepted output, not arbitrary input-object allocation.
+Raw passthrough values are outside the JSON envelope limits.
+
+Datetime ISO strings do not retain `fold` or timezone object identity/rules.
+Unsupported subclasses (including named tuples and enums) fail on automatic task
+return storage. `string_serialization=True` is a per-put/get opt-out, not a global
+switch for automatic returns. Legacy recognition is limited to canonical base64
+protocol2–5 pickles with the expected framing; noncanonical or oversized values
+may remain raw. Invalid legacy settings are checked when encoding or reading
+recognized legacy data, not for raw passthrough or JSON reads. Treat legacy mode
+as a temporary trusted-producer migration mechanism, and remove it after rollout.

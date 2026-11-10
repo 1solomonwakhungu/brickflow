@@ -126,6 +126,7 @@ nav:
       - HighLevel: highlevel.md
       - Workflows: workflows.md
       - Tasks: tasks.md
+      - Task-value migration: task-value-transport.md
       - Projects: projects.md
       - ENV Variables: environment-variables.md
       - Importing Modules: how-imports-work.md

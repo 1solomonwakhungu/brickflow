@@ -202,7 +202,9 @@ def _check_int_digits(value: int, limits: TaskValueLimits) -> None:
         )
 
 
-def _to_json_tree(value: Any, budget: _Budget, depth: int = 0) -> Any:  # noqa: C901
+def _to_json_tree(
+    value: Any, budget: _Budget, depth: int = 0
+) -> Any:  # pylint: disable=too-many-return-statements
     budget.visit(depth)
     value_type = type(value)
     if value is None or value_type in (bool, str):
@@ -262,7 +264,9 @@ def _expect(cond: bool, message: str) -> None:
         raise TaskValueSerializationError(f"Malformed task value: {message}")
 
 
-def _from_json_tree(node: Any, budget: _Budget, depth: int = 0) -> Any:  # noqa: C901
+def _from_json_tree(
+    node: Any, budget: _Budget, depth: int = 0
+) -> Any:  # pylint: disable=too-many-return-statements
     budget.visit(depth)
     if node is None or isinstance(node, (bool, str, int, float)):
         return node
@@ -296,7 +300,14 @@ def _from_json_tree(node: Any, budget: _Budget, depth: int = 0) -> Any:  # noqa:
             if tag == "set":
                 return set(items)
             return frozenset(items)
-        _expect(isinstance(payload, (str, list)), f"{tag!s} payload has wrong type")
+        _expect(
+            (
+                isinstance(payload, list)
+                if tag == "timedelta"
+                else isinstance(payload, str)
+            ),
+            f"{tag!s} payload has wrong type",
+        )
         if tag == "float":
             _expect(payload in ("nan", "inf", "-inf"), "invalid non-finite float")
             return float(payload)
@@ -340,6 +351,32 @@ def _json_nesting_depth(text: str) -> int:
         else:
             depth -= 1
     return max_depth
+
+
+def _preflight_json_nodes(text: str, limits: TaskValueLimits) -> None:
+    """Bound parser allocations, including the typed envelope's overhead.
+
+    A logical value contributes at most eight JSON nodes (the timedelta tag
+    is the largest scalar representation); the outer envelope contributes four.
+    Exact logical item and depth limits are also checked after parsing.
+    """
+    tokens = re.finditer(
+        r'"(?:[^"\\]|\\.)*"|[{}\[\]]|true|false|null|-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?',
+        text,
+    )
+    count = 0
+    for token in tokens:
+        value = token.group()
+        if value not in ("}", "]"):
+            count += 1
+        if count > 8 * limits.max_items + 4:
+            raise TaskValueSerializationError(
+                "Task value exceeds the parser node budget"
+            )
+        if value[0] in "-0123456789" and len(value.lstrip("-")) > limits.max_int_digits:
+            raise TaskValueSerializationError(
+                "Task value numeric token exceeds the digits limit"
+            )
 
 
 def _reject_duplicate_keys(pairs: List[Any]) -> Dict[str, Any]:
@@ -401,6 +438,16 @@ def decode_task_value(
             f"Task value exceeds the maximum nesting depth of {limits.max_depth}"
         )
 
+    _preflight_json_nodes(encoded, limits)
+
+    def _parse_float(text: str) -> float:
+        value = float(text)
+        if not math.isfinite(value):
+            raise TaskValueSerializationError(
+                "Non-finite floats require an explicit type tag"
+            )
+        return value
+
     def _parse_int(text: str) -> int:
         if len(text.lstrip("-")) > limits.max_int_digits:
             raise TaskValueSerializationError(
@@ -414,6 +461,7 @@ def decode_task_value(
             object_pairs_hook=_reject_duplicate_keys,
             parse_constant=_reject_constant,
             parse_int=_parse_int,
+            parse_float=_parse_float,
         )
     except TaskValueSerializationError:
         raise
