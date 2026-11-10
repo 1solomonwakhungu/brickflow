@@ -31,11 +31,14 @@ TableauRefreshDataSourceOperator(
 ).execute()
 ```
 
-The Tableau server certificate is always verified. For a server whose
+The Tableau server certificate is verified for HTTPS connections. Configure an
+HTTPS endpoint; HTTP URLs remain accepted, and certificate verification does
+not restrict redirect destinations. For a server whose
 certificate is issued by a private certificate authority, pass
 `ca_bundle="/path/to/ca.pem"` (or set `REQUESTS_CA_BUNDLE`). The password is
-passed to Tableau authentication unchanged but is masked in logs and in the
-text representation of `wrapper_options`.
+passed to Tableau authentication unchanged but its field is masked in the
+wrapper option log and text representation of `wrapper_options`. Server-derived
+errors are not sanitized and may contain sensitive response text.
 
 Requires the `tableauserverclient` library to be installed on the cluster
 (via `PypiTaskLibrary("tableauserverclient==0.25")` or the

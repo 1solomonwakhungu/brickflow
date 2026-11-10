@@ -40,7 +40,7 @@ def _api_variant(version: str) -> str:
 def _resolve_tls_verify(
     ca_bundle: Optional[Union[str, "os.PathLike[str]"]],
 ) -> Union[bool, str]:
-    """Return the ``requests`` ``verify`` value; verification is always on."""
+    """Return the ``requests`` ``verify`` value; verification is on for HTTPS."""
     if ca_bundle is None:
         return True
     ca_path = os.fspath(ca_bundle)
@@ -75,7 +75,7 @@ class AirflowCluster:
         used to verify the Airflow server certificate, e.g. for a private
         PKI. When omitted, the default trust store is used (``requests``
         also honors the ``REQUESTS_CA_BUNDLE`` environment variable).
-        Certificate verification cannot be disabled.
+        HTTPS verification has no bypass option.
     """
 
     def __init__(
