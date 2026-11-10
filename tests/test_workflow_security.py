@@ -627,6 +627,7 @@ def test_readiness_rejects_malformed_repository_without_api_calls(
         ),
         (_ok(""), "returned an empty response"),
         (_ok("{"), "returned malformed JSON"),
+        (_ok("null"), "the API did not return environment 'pypi'"),
         (_ok("[]"), "the API did not return environment 'pypi'"),
         (_ok({"message": "Not Found"}), "the API did not return environment 'pypi'"),
         (_ok(dict(READY_ENVIRONMENT, name="pypi-test")), "did not return environment"),
@@ -688,6 +689,12 @@ USER = {"type": "User", "reviewer": {"id": 101}}
 @pytest.mark.parametrize(
     "environment, reason",
     [
+        (
+            _environment(
+                protection_rules=_reviewers({"type": "User", "reviewer": {"id": 0}})
+            ),
+            "malformed required reviewer",
+        ),
         (_environment(protection_rules=[]), "no required reviewers rule"),
         (_environment(protection_rules=None), "malformed protection rules"),
         (_environment(protection_rules="required"), "malformed protection rules"),

@@ -411,9 +411,8 @@ jobs:
               try:
                   environment = api_get(endpoint)
               except ApiError as error:
-                  environment = None
                   problems.append("environment 'pypi' could not be read: %s" % error)
-              if environment is not None:
+              else:
                   if not isinstance(environment, dict) or environment.get("name") != "pypi":
                       problems.append("the API did not return environment 'pypi'")
                   else:
