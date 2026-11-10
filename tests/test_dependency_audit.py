@@ -168,6 +168,7 @@ class OsvStub:
         self.delay = 0.0
         self.status = 200
         self.raw_body: Optional[bytes] = None
+        self.extra_length = 0
         self.redirect_to: Optional[str] = None
 
 
@@ -180,7 +181,7 @@ def osv_server(stub: OsvStub) -> Iterator[str]:
         def _send(self, payload: bytes, status: int) -> None:
             self.send_response(status)
             self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(payload)))
+            self.send_header("Content-Length", str(len(payload) + stub.extra_length))
             self.end_headers()
             self.wfile.write(payload)
 
@@ -815,3 +816,36 @@ def test_slow_body_stops_at_remaining_deadline() -> None:
         server.shutdown()
         server.server_close()
         thread.join()
+
+
+@pytest.mark.parametrize(
+    "timestamp", ["not-a-date", " ", "", "2026-02-30T00:00:00Z", "2026-01-01"]
+)
+def test_invalid_withdrawal_cannot_suppress_advisory(
+    project: Path, timestamp: str
+) -> None:
+    stub = OsvStub()
+    stub.hits[("requests", "2.34.2")] = ["GHSA-wdrn-0000-0000"]
+    stub.vulns["GHSA-wdrn-0000-0000"] = _advisory(
+        "GHSA-wdrn-0000-0000", "requests", "2.35", withdrawn=timestamp
+    )
+    with osv_server(stub) as url:
+        assert _run(project, url) == audit.EXIT_INCOMPLETE
+
+
+@pytest.mark.parametrize("token", [False, None, 0, [], {}])
+def test_non_string_pagination_token_fails_cli(
+    project: Path, monkeypatch: Any, token: Any
+) -> None:
+    def response(_self: Any, _method: str, _path: str, payload: Any = None) -> Any:
+        return {"results": [{"next_page_token": token} for _ in payload["queries"]]}
+
+    monkeypatch.setattr(audit.OsvClient, "_request", response)
+    assert _run(project, "http://127.0.0.1:1") == audit.EXIT_INCOMPLETE
+
+
+def test_complete_json_with_truncated_content_length_fails_cli(project: Path) -> None:
+    stub = OsvStub()
+    stub.extra_length = 100
+    with osv_server(stub) as url:
+        assert _run(project, url) == audit.EXIT_INCOMPLETE

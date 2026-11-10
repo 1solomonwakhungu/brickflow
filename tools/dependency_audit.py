@@ -541,6 +541,20 @@ class OsvClient:
                 with self._opener.open(
                     request, timeout=min(self.timeout, remaining)
                 ) as response:
+                    lengths = response.headers.get_all("Content-Length", [])
+                    expected_length = None
+                    if lengths:
+                        if len(lengths) != 1 or not re.fullmatch(r"[0-9]+", lengths[0]):
+                            raise AuditError(
+                                "advisory response has ambiguous Content-Length"
+                            )
+                        if response.headers.get("Transfer-Encoding") is not None:
+                            raise AuditError(
+                                "advisory response has conflicting framing"
+                            )
+                        expected_length = int(lengths[0])
+                        if expected_length > self.max_response_bytes:
+                            raise AuditError("advisory response exceeds the byte limit")
                     chunks = []
                     received = 0
                     while True:
@@ -570,6 +584,10 @@ class OsvClient:
                         received += len(chunk)
                         if received > self.max_response_bytes:
                             raise AuditError("advisory response exceeds the byte limit")
+                    if expected_length is not None and received != expected_length:
+                        raise AuditError(
+                            "advisory response is shorter than Content-Length"
+                        )
                     raw = b"".join(chunks)
                 if len(raw) > self.max_response_bytes:
                     raise AuditError(
@@ -625,6 +643,10 @@ class OsvClient:
                     raise AuditError(
                         f"OSV querybatch returned a malformed result for {pair[0]} {pair[1]}"
                     )
+                if "next_page_token" in item and not isinstance(
+                    item["next_page_token"], str
+                ):
+                    raise AuditError("OSV result has a malformed pagination token")
                 if item.get("next_page_token"):
                     raise AuditError(
                         f"OSV result for {pair[0]} {pair[1]} is paginated; refusing a partial audit"
@@ -702,6 +724,17 @@ def _validate_advisory(data: Dict[str, Any]) -> None:
     for key in ("summary", "details", "withdrawn"):
         if key in data and not isinstance(data[key], str):
             raise AuditError(f"OSV advisory {key} must be a string")
+    if "withdrawn" in data:
+        withdrawn = data["withdrawn"]
+        if not re.fullmatch(
+            r"[0-9]{4}-[0-9]{2}-[0-9]{2}[Tt][0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?(?:[Zz]|[+-][0-9]{2}:[0-9]{2})",
+            withdrawn,
+        ):
+            raise AuditError("OSV withdrawn timestamp is malformed")
+        try:
+            _dt.datetime.fromisoformat(withdrawn.upper().replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise AuditError("OSV withdrawn timestamp is invalid") from exc
     if "database_specific" in data and not isinstance(data["database_specific"], dict):
         raise AuditError("OSV database_specific must be an object")
 
