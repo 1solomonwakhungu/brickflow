@@ -73,9 +73,8 @@ class TestWorkflowTaskDependencySensor:
 
     @pytest.fixture(autouse=True)
     def mock_get_job_id(self, mocker):
-        mocker.patch(
-            "brickflow_plugins.sensors.workflow_dependency_sensor.get_job_id",
-            return_value=1,
+        mocker.patch.object(
+            WorkflowTaskDependencySensor, "_lookup_job_id", return_value=1
         )
 
     @pytest.fixture(autouse=True, name="api")
