@@ -8,9 +8,10 @@ to reach a successful state. Requires only ``requests`` -- no
 
 from __future__ import annotations
 
+import os
 import time
 from datetime import timedelta
-from typing import Union
+from typing import Optional, Union
 
 import pytz
 import requests
@@ -21,11 +22,28 @@ from brickflow_plugins import log
 from brickflow_plugins.sensors import Sensor
 
 
+def _resolve_tls_verify(
+    ca_bundle: Optional[Union[str, "os.PathLike[str]"]],
+) -> Union[bool, str]:
+    """Return the ``requests`` ``verify`` value; verification is always on."""
+    if ca_bundle is None:
+        return True
+    ca_path = os.fspath(ca_bundle)
+    if not isinstance(ca_path, str) or not ca_path:
+        raise ValueError("'ca_bundle' must be a non-empty filesystem path.")
+    return ca_path
+
+
 class AutosysSensor(Sensor):
     """
     Sensor that polls an Autosys REST endpoint for the given ``job_name``
     and waits until it reports a successful status recent enough to satisfy
     ``time_delta``.
+
+    The server certificate is always verified. Pass ``ca_bundle`` (a CA
+    bundle file or OpenSSL hashed certificate directory) to trust a private
+    certificate authority; otherwise the default trust store is used
+    (``requests`` also honors the ``REQUESTS_CA_BUNDLE`` environment variable).
 
     Example
     -------
@@ -46,7 +64,10 @@ class AutosysSensor(Sensor):
         job_name: str,
         poke_interval: int,
         time_delta: Union[timedelta, dict] = timedelta(days=0),
+        ca_bundle: Optional[Union[str, "os.PathLike[str]"]] = None,
     ) -> None:
+        self.ca_bundle = ca_bundle
+        self._verify = _resolve_tls_verify(ca_bundle)
         super().__init__()
         self.url = str(url).rstrip("/")
         self.job_name = job_name
@@ -66,7 +87,7 @@ class AutosysSensor(Sensor):
         response = requests.get(
             url,
             headers=headers,
-            verify=False,  # nosec
+            verify=self._verify,
             timeout=10,
         )
 

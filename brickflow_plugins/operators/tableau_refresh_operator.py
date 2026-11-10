@@ -10,11 +10,10 @@ complete. No Airflow dependency -- plain Python classes with an
 from __future__ import annotations
 
 import concurrent.futures
+import os
 import time
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Optional, Union
-
-import urllib3
+from typing import TYPE_CHECKING, Any, Dict, Optional, Union
 
 from brickflow_plugins import log
 
@@ -78,6 +77,46 @@ except ModuleNotFoundError:
     pass
 
 
+_REDACTED = "***"
+_SECRET_OPTION_KEYS = frozenset({"password"})
+
+
+def _resolve_tls_verify(
+    ca_bundle: Optional[Union[str, "os.PathLike[str]"]],
+) -> Union[bool, str]:
+    """Return the ``requests`` ``verify`` value for a Tableau connection.
+
+    Certificate verification is always enabled. When ``ca_bundle`` is set,
+    the server certificate is validated against that CA bundle file (or
+    OpenSSL hashed certificate directory) instead of the default trust store.
+    """
+    if ca_bundle is None:
+        return True
+    ca_path = os.fspath(ca_bundle)
+    if not isinstance(ca_path, str) or not ca_path:
+        raise ValueError("'ca_bundle' must be a non-empty filesystem path.")
+    return ca_path
+
+
+class _WrapperOptions(Dict[str, Any]):
+    """Wrapper options whose text representation masks secret values.
+
+    The mapping still holds the original values so it can be unpacked into
+    :class:`TableauWrapper`; only ``repr``/``str`` output is redacted.
+    """
+
+    def redacted(self) -> Dict[str, Any]:
+        return {
+            key: (_REDACTED if key in _SECRET_OPTION_KEYS and value else value)
+            for key, value in self.items()
+        }
+
+    def __repr__(self) -> str:
+        return repr(self.redacted())
+
+    __str__ = __repr__
+
+
 class TableauRefreshException(Exception):
     pass
 
@@ -110,6 +149,7 @@ class TableauWrapper:
         polling_required: bool = True,
         polling_interval: int = 30,
         polling_timeout: int = 600,
+        ca_bundle: Optional[Union[str, "os.PathLike[str]"]] = None,
     ) -> None:
         """
         Parameters
@@ -139,6 +179,12 @@ class TableauWrapper:
         polling_timeout : int
             Stop polling if the job was not completed within the specified
             interval (seconds).
+        ca_bundle : str or os.PathLike, optional
+            Path to a CA bundle file (or OpenSSL hashed certificate directory)
+            used to verify the Tableau server certificate, e.g. for a private
+            PKI. When omitted, the default trust store is used (``requests``
+            also honors the ``REQUESTS_CA_BUNDLE`` environment variable).
+            Certificate verification cannot be disabled.
         """
         _ensure_tableau()
         self.server = server
@@ -153,9 +199,18 @@ class TableauWrapper:
         self.polling_required = polling_required
         self.polling_interval = polling_interval
         self.polling_timeout = polling_timeout
+        self.ca_bundle = ca_bundle
+        self._verify = _resolve_tls_verify(ca_bundle)
 
         self._logger = log
         self._ip = None
+
+    def __repr__(self) -> str:
+        return (
+            f"{type(self).__name__}(server={self.server!r}, "
+            f"username={self.username!r}, password={_REDACTED!r}, "
+            f"site={self.site!r})"
+        )
 
     class MultipleWorkingProjectsException(Exception):
         def __init__(self):
@@ -171,14 +226,11 @@ class TableauWrapper:
             super().__init__(self.message)
 
     def _authenticate(self):
-        """Authenticate on the Tableau server."""
-        # Suppress 'InsecureRequestWarning'
-        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
+        """Authenticate on the Tableau server with certificate verification."""
         self._authenticator = TSC.TableauAuth(self.username, self.password, self.site)
         self._server = TSC.Server(self.server)
         self._server.version = self.version
-        self._server.add_http_options({"verify": False})
+        self._server.add_http_options({"verify": self._verify})
 
         return self._server.auth.sign_in(self._authenticator)
 
@@ -394,25 +446,31 @@ class TableauRefreshABCOperator(ABC):
         polling_interval: int = 30,
         polling_timeout: int = 600,
         fail_operator: bool = True,
+        ca_bundle: Optional[Union[str, "os.PathLike[str]"]] = None,
     ) -> None:
         _ensure_tableau()
         self._logger = log
+        # Validate early so misconfiguration fails before any connection.
+        _resolve_tls_verify(ca_bundle)
 
-        self.wrapper_options = {
-            "server": server,
-            "username": username,
-            "password": password,
-            "site": site,
-            "project": project,
-            "parent_project": parent_project,
-            "version": version,
-            "max_async_workers": max_async_workers,
-            "polling_required": polling_required,
-            "polling_interval": polling_interval,
-            "polling_timeout": polling_timeout,
-        }
+        self.wrapper_options = _WrapperOptions(
+            {
+                "server": server,
+                "username": username,
+                "password": password,
+                "site": site,
+                "project": project,
+                "parent_project": parent_project,
+                "version": version,
+                "max_async_workers": max_async_workers,
+                "polling_required": polling_required,
+                "polling_interval": polling_interval,
+                "polling_timeout": polling_timeout,
+                "ca_bundle": ca_bundle,
+            }
+        )
 
-        self._logger.info(f"Tableau wrapper options:{self.wrapper_options}")
+        self._logger.info("Tableau wrapper options:%s", self.wrapper_options.redacted())
 
         self.tableau_wrapper: Optional[TableauWrapper] = None
         self.fail_operator = fail_operator

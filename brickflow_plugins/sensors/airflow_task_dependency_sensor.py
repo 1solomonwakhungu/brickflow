@@ -10,9 +10,10 @@ needs to be installed on the Databricks cluster.
 
 from __future__ import annotations
 
+import os
 import time
 from datetime import datetime, timedelta
-from typing import List, Optional
+from typing import List, Optional, Union
 
 import requests
 
@@ -36,6 +37,18 @@ def _api_variant(version: str) -> str:
     return "v1"
 
 
+def _resolve_tls_verify(
+    ca_bundle: Optional[Union[str, "os.PathLike[str]"]],
+) -> Union[bool, str]:
+    """Return the ``requests`` ``verify`` value; verification is always on."""
+    if ca_bundle is None:
+        return True
+    ca_path = os.fspath(ca_bundle)
+    if not isinstance(ca_path, str) or not ca_path:
+        raise ValueError("'ca_bundle' must be a non-empty filesystem path.")
+    return ca_path
+
+
 class AirflowClusterAuthError(Exception):
     """Raised when Airflow cluster authentication fails."""
 
@@ -57,12 +70,26 @@ class AirflowCluster:
         Bearer token that will be sent in the ``Authorization`` header.
         For Airflow 3.x, this is typically a short-lived JWT obtained
         out-of-band (e.g. via Okta, MAP, or ``POST /auth/token``).
+    ca_bundle : str or os.PathLike, optional
+        Path to a CA bundle file (or OpenSSL hashed certificate directory)
+        used to verify the Airflow server certificate, e.g. for a private
+        PKI. When omitted, the default trust store is used (``requests``
+        also honors the ``REQUESTS_CA_BUNDLE`` environment variable).
+        Certificate verification cannot be disabled.
     """
 
-    def __init__(self, url: str, version: str, token: str) -> None:
+    def __init__(
+        self,
+        url: str,
+        version: str,
+        token: str,
+        ca_bundle: Optional[Union[str, "os.PathLike[str]"]] = None,
+    ) -> None:
         self.url = str(url).rstrip("/")
         self.version = version
         self.token = token
+        self.ca_bundle = ca_bundle
+        self.verify = _resolve_tls_verify(ca_bundle)
 
 
 class AirflowTaskDependencySensor(Sensor):
@@ -163,7 +190,9 @@ class AirflowTaskDependencySensor(Sensor):
             )
 
         log.info("URL to poke for dag runs %s", url)
-        response = requests.get(url, headers=headers, verify=False, timeout=10)
+        response = requests.get(
+            url, headers=headers, verify=self.cluster.verify, timeout=10
+        )
         response.raise_for_status()
 
         list_of_dictionaries = response.json()["dag_runs"]
@@ -231,7 +260,7 @@ class AirflowTaskDependencySensor(Sensor):
             )
         log.info("Pinging airflow API %s for task status ", task_url)
         task_response = requests.get(
-            task_url, headers=headers, verify=False, timeout=10
+            task_url, headers=headers, verify=self.cluster.verify, timeout=10
         )
         task_response.raise_for_status()
         return task_response.json()["state"]

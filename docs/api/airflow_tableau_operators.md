@@ -31,6 +31,12 @@ TableauRefreshDataSourceOperator(
 ).execute()
 ```
 
+The Tableau server certificate is always verified. For a server whose
+certificate is issued by a private certificate authority, pass
+`ca_bundle="/path/to/ca.pem"` (or set `REQUESTS_CA_BUNDLE`). The password is
+passed to Tableau authentication unchanged but is masked in logs and in the
+text representation of `wrapper_options`.
+
 Requires the `tableauserverclient` library to be installed on the cluster
 (via `PypiTaskLibrary("tableauserverclient==0.25")` or the
 `brickflow[tableau]` extra during local development).

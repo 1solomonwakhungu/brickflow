@@ -822,6 +822,8 @@ def airflow_external_task_dependency_sensor():
             url="https://proxy.../.../cluster_id/",
             version="2.0.2",  # "1.x" -> /api/experimental, "3.x" -> /api/v2
             token=token,
+            # Optional: CA bundle for a server certificate issued by a private CA.
+            # ca_bundle="/dbfs/FileStore/certs/internal-ca.pem",
         ),
         allowed_states=["success"],
         execution_delta=timedelta(hours=-2),
@@ -859,9 +861,22 @@ def autosys_sensor():
         job_name="my_upstream_job",
         poke_interval=60,
         time_delta=timedelta(hours=1),
+        # Optional: CA bundle for a server certificate issued by a private CA.
+        # ca_bundle="/dbfs/FileStore/certs/internal-ca.pem",
     )
     sensor.poke()
 ```
+
+#### TLS certificate verification
+
+`AirflowCluster`, `AutosysSensor`, and the Tableau refresh operators always
+verify the server's TLS certificate. If a server uses a certificate issued by
+a private certificate authority, pass the CA bundle path (a PEM file or an
+OpenSSL hashed certificate directory) with the `ca_bundle` parameter, or set
+the `REQUESTS_CA_BUNDLE` environment variable on the cluster. Certificate
+verification cannot be disabled; a server whose certificate cannot be
+verified fails with `requests.exceptions.SSLError` before any credential is
+sent.
 
 #### Workflow Dependency Sensor
 
@@ -1058,6 +1073,10 @@ Data source 'my-datasource' refresh status:
 
 If refresh fails, `job_status_details` will contain the error message retrieved from the server and the operator will
 fail. If fail behavior is not desired, `fail_operator = False` can be set in the operator parameters.
+
+The Tableau server certificate is always verified; pass `ca_bundle` for a server that uses a private certificate
+authority (see [TLS certificate verification](#tls-certificate-verification)). The password is never written to the
+logs.
 
 ```python title="tableau_refresh_operators"
 from brickflow.context import ctx
