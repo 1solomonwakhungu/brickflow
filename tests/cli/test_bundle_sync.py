@@ -59,6 +59,9 @@ def test_projects_sync_forwards_string_duration(monkeypatch, sync_boundary):
     )
     monkeypatch.setattr(project_option, "type", click.Choice(["analytics"]))
 
+    # Restore the environment value changed by Click's callback.
+    monkeypatch.setenv("BRICKFLOW_ENV", "local")
+
     result = CliRunner().invoke(
         projects.sync_project,
         [
