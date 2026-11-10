@@ -31,18 +31,41 @@ TableauRefreshDataSourceOperator(
 ).execute()
 ```
 
-The Tableau server certificate is verified for HTTPS connections. Configure an
-HTTPS endpoint; HTTP URLs remain accepted, and certificate verification does
-not restrict redirect destinations. For a server whose
-certificate is issued by a private certificate authority, pass
-`ca_bundle="/path/to/ca.pem"` (or set `REQUESTS_CA_BUNDLE`). The password is
-passed to Tableau authentication unchanged but its field is masked in the
-wrapper option log and text representation of `wrapper_options`. Server-derived
-errors are not sanitized and may contain sensitive response text.
+`server` must be an `https://` URL. Plaintext (`http://`) and scheme-less
+addresses raise `ValueError` when the operator or `TableauWrapper` is created;
+there is no plaintext fallback. The server certificate is verified. For a
+server whose certificate is issued by a private certificate authority, pass
+`ca_bundle="/path/to/ca.pem"` (or set `REQUESTS_CA_BUNDLE`).
 
-Requires the `tableauserverclient` library to be installed on the cluster
-(via `PypiTaskLibrary("tableauserverclient==0.25")` or the
-`brickflow[tableau]` extra during local development).
+The Tableau client's HTTP session is bound to the scheme, host and effective
+port of `server`. That check runs on every request the client sends,
+including the sign-in redirect tableauserverclient follows itself and
+redirects that `requests` follows automatically. Redirects within the same
+origin are followed as before. A request for any other origin, including an
+HTTPS to HTTP downgrade or another port on the same host, raises
+`brickflow_plugins._origin_policy.CrossOriginRequestError` (a
+`requests.exceptions.RequestException`) before it is sent, so neither the
+password nor the session token reaches that host. The policy applies only to
+the Tableau client's own session; it does not change `requests` globally.
+
+The password is masked in the wrapper option log and in the text
+representation of `wrapper_options` and `TableauWrapper`. When sign-in fails
+for a reason other than a transport error, the operators raise
+`TableauSignInError` in place of the tableauserverclient exception
+(`FailedSignInError`, `ServerResponseError`, `NonXMLResponseError` and so on).
+Its message keeps the original type name and text with the password, in its
+raw, XML-, URL- and repr-escaped forms, replaced by `***`; `original_type`
+holds the original class name, and the original exception is neither chained
+nor kept as implicit context (`__cause__` and `__context__` are `None`).
+Transport errors such as `requests.exceptions.SSLError`, `ConnectionError`,
+`CrossOriginRequestError` or an `OSError` for an unreadable CA bundle
+propagate unchanged. Redaction covers sign-in only: errors and job notes
+returned after sign-in carry server text as-is.
+
+Requires the `tableauserverclient` library on the cluster. Brickflow's plugin
+library list installs 0.41 on Python 3.10+ and 0.25 on Python 3.9; the
+`brickflow[tableau]` extra allows 0.41 on Python 3.10+ and 0.25 to 0.38 on
+Python 3.9. If you pin it yourself, use 0.41 on Python 3.10+ clusters.
 
 ## API Reference
 
