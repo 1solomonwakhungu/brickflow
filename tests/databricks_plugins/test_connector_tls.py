@@ -22,6 +22,7 @@ from xml.etree import ElementTree
 import pytest
 import requests
 
+from brickflow_plugins.operators import tableau_refresh_operator as tableau
 from brickflow_plugins.sensors.airflow_task_dependency_sensor import (
     AirflowCluster,
     AirflowTaskDependencySensor,
@@ -287,8 +288,6 @@ class TestAutosysTls:
         with pytest.raises(ValueError):
             _autosys_sensor("https://autosys.invalid", ca_bundle="")
 
-
-from brickflow_plugins.operators import tableau_refresh_operator as tableau
 
 requires_tableau = pytest.mark.skipif(
     tableau.TSC is None, reason="tableauserverclient is not installed"
