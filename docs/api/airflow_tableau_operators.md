@@ -53,14 +53,23 @@ representation of `wrapper_options` and `TableauWrapper`. When sign-in fails
 for a reason other than a transport error, the operators raise
 `TableauSignInError` in place of the tableauserverclient exception
 (`FailedSignInError`, `ServerResponseError`, `NonXMLResponseError` and so on).
-Its message keeps the original type name and text with the password, in its
-raw, XML-, URL- and repr-escaped forms, replaced by `***`; `original_type`
+Its message keeps only the original exception type name and omits all server
+response text, including echoed or multiply escaped credentials. `original_type`
 holds the original class name, and the original exception is neither chained
 nor kept as implicit context (`__cause__` and `__context__` are `None`).
 Transport errors such as `requests.exceptions.SSLError`, `ConnectionError`,
 `CrossOriginRequestError` or an `OSError` for an unreadable CA bundle
-propagate unchanged. Redaction covers sign-in only: errors and job notes
-returned after sign-in carry server text as-is.
+propagate unchanged. Such errors can include server text, including echoed
+credentials in malformed response status lines, chunk framing or redirect
+locations. Their traceback locals can also contain the serialized sign-in
+request. Response omission does not protect error reporters that capture
+these transport exceptions or their locals. Errors and job notes returned
+after sign-in carry server text as-is.
+
+This changes the sign-in exception contract: handlers for TSC exception
+classes and consumers of their `code` attribute must migrate to
+`TableauSignInError`. The omitted message no longer distinguishes Tableau
+error codes such as invalid credentials and a locked account.
 
 Requires the `tableauserverclient` library on the cluster. Brickflow's plugin
 library list installs 0.41 on Python 3.10+ and 0.25 on Python 3.9; the

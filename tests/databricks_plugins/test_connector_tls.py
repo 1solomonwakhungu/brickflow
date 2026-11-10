@@ -364,7 +364,9 @@ class TestTableauCredentials:
         with pytest.raises(tableau.TableauSignInError) as excinfo:
             wrapper.refresh_workbooks(["wb"])
         assert TABLEAU_SENTINEL not in _format(excinfo.value)
-        assert "RuntimeError: denied ***" in str(excinfo.value)
+        assert str(excinfo.value) == (
+            "Tableau sign-in failed (RuntimeError); server response omitted"
+        )
         assert excinfo.value.original_type == "RuntimeError"
         assert TABLEAU_SENTINEL not in logs()
 
