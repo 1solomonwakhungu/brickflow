@@ -94,10 +94,11 @@ The publish job needs exactly three jobs from this workflow: the full test
 matrix, **Build distributions** and **Publication readiness**. Nothing else
 gates a release. No dependency or security-advisory audit runs as part of a
 release, so an expired advisory exception, a newly published advisory or an
-unavailable advisory service does not stop publication. A dependency audit
-workflow is being prepared separately; until it is added to this workflow
-and to the publish job's `needs`, and tested there, it is advisory CI only
-and has no effect on releases. Branch protection and other repository
+unavailable advisory service does not stop publication. The separate
+`dependency-audit.yml` workflow checks lockfile advisories and installed
+versions. Until that audit is added to this workflow and to the publish
+job's `needs`, and tested there, it is advisory CI only and has no effect
+on releases. Branch protection and other repository
 settings that might require it were not inspected.
 
 ## External prerequisites
