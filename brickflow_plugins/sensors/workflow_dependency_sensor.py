@@ -174,6 +174,8 @@ class WorkflowDependencySensor:
         }
 
         while True:
+            # Each poll must start from the newest page of runs.
+            params.pop("page_token", None)
             page_index = 0
             has_more = True
             while has_more is True:
