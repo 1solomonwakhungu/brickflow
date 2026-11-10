@@ -391,7 +391,9 @@ def build_graph(
             environment = Environment(python, platform)
             for scope, specs in roots.items():
                 visited: Set[Tuple[str, str, Tuple[str, ...]]] = set()
-                stack = [(spec, ()) for spec in specs]
+                stack: List[Tuple[DependencySpec, Tuple[str, ...]]] = [
+                    (spec, ()) for spec in specs
+                ]
                 while stack:
                     spec, parent_extras = stack.pop()
                     if not spec.applies(environment, parent_extras):
