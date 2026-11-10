@@ -41,6 +41,12 @@ _SNOWFLAKE_INSTALL_HINT = """You must install snowflake library to use run snowf
     """
 
 
+# Connector 4.8 turned OCSP revocation checks off unless the caller opts in;
+# 3.x enabled them in fail-open mode by default. Passing the mode explicitly
+# keeps the same certificate revocation behaviour on every supported release.
+_REVOCATION_CHECK = {"ocsp_fail_open": True}
+
+
 def _ensure_snowflake() -> None:
     """Lazily import snowflake.connector on first use; raise a helpful error
     if missing. Rebinds the module-level ``snowflake`` name so all subsequent
@@ -180,6 +186,7 @@ class SnowflakeOperator:
                 database=self.database,
                 role=self.role,
                 authenticator=self.authenticator,
+                **_REVOCATION_CHECK,
             )
         else:
             self.log.info(
@@ -198,6 +205,7 @@ class SnowflakeOperator:
                 warehouse=self.warehouse,
                 database=self.database,
                 role=self.role,
+                **_REVOCATION_CHECK,
             )
 
         self.parameters.update(

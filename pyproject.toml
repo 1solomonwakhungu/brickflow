@@ -63,6 +63,31 @@ urllib3 = [
 boxsdk = { version = "^3.9.2", optional = true }
 cerberus-python-client = { version = "^2.5.4", optional = true }
 snowflake = { version = "^1.5.0", optional = true }
+# The snowflake package leaves snowflake-connector-python unpinned, so the
+# connector and its TLS chain carry their own floors (see
+# docs/dependency-security.md). GHSA-5cc2-282f-jjq2 (TLS hostname check) is
+# fixed in 3.18.1 and 4.7.1; 4.0-4.5 still install on Python 3.9 and are
+# vulnerable, so 3.9 stays on 3.18.x. GHSA-qqj6-54q6-cxv6 (secrets in logs) is
+# fixed only in 4.7.3, which requires Python 3.10. 5.x is a separate major.
+snowflake-connector-python = [
+    { version = ">=3.18.1,<4.0.0", python = "<3.10", optional = true },
+    { version = ">=4.7.3,<5.0.0", python = ">=3.10", optional = true },
+]
+# On Python 3.9 the lock stays on cryptography 43.0.3 and pyOpenSSL 24.3.0:
+# cryptography 44+ excludes Python 3.9.0 and 3.9.1, and connector 3.18.x
+# requires pyOpenSSL < 26. Python 3.10+ takes the fixed releases.
+cryptography = [
+    { version = ">=43.0.3", python = "<3.10", optional = true },
+    { version = ">=50.0.0", python = ">=3.10", optional = true },
+]
+pyopenssl = [
+    { version = ">=24.3.0,<26.0.0", python = "<3.10", optional = true },
+    { version = ">=26.0.0", python = ">=3.10", optional = true },
+]
+filelock = [
+    { version = ">=3.19.1,<4.0.0", python = "<3.10", optional = true },
+    { version = ">=3.20.3,<4.0.0", python = ">=3.10", optional = true },
+]
 # tableauserverclient: 0.39 is yanked and 0.40 fails to import on Python 3.9.
 # Every release re-sends sign-in credentials on cross-origin redirects; the
 # Tableau connector refuses those itself (see docs/dependency-security.md).
@@ -76,9 +101,18 @@ tableauserverclient = [
 [tool.poetry.extras]
 box = ["boxsdk"]
 cerberus = ["cerberus-python-client"]
-snowflake = ["snowflake"]
+snowflake = ["snowflake", "snowflake-connector-python", "cryptography", "pyopenssl", "filelock"]
 tableau = ["tableauserverclient"]
-all-plugins = ["boxsdk", "cerberus-python-client", "snowflake", "tableauserverclient"]
+all-plugins = [
+    "boxsdk",
+    "cerberus-python-client",
+    "snowflake",
+    "snowflake-connector-python",
+    "cryptography",
+    "pyopenssl",
+    "filelock",
+    "tableauserverclient",
+]
 
 
 [tool.poetry.scripts]
@@ -100,6 +134,17 @@ types-PyYAML = "*"                       # only for development purposes no need
 types-requests = ">=2.28.11.16 <3.0.0.0" # only for development purposes no need to make installation req
 # Optional plugin backends used in tests
 snowflake = "^1.5.0"
+snowflake-connector-python = [
+    { version = ">=3.18.1,<4.0.0", python = "<3.10" },
+    { version = ">=4.7.3,<5.0.0", python = ">=3.10" },
+]
+# Lock-only: the connector uses FileLock alone. 3.20.3 is the newest release
+# before ReadWriteLock and the SoftFileLock changes that brought further
+# advisories. Published installs keep the ">=3.20.3,<4" range above.
+filelock = [
+    { version = ">=3.19.1,<4.0.0", python = "<3.10" },
+    { version = "3.20.3", python = ">=3.10" },
+]
 tableauserverclient = [
     { version = ">=0.25,<0.39", python = "<3.10" },
     { version = ">=0.41,<0.42", python = ">=3.10" },
