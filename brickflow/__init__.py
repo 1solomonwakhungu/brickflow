@@ -79,6 +79,9 @@ class BrickflowEnvVars(Enum):
     BRICKFLOW_BUNDLE_CLI_EXEC = "BRICKFLOW_BUNDLE_CLI_EXEC"
     BRICKFLOW_BUNDLE_NO_DOWNLOAD = "BRICKFLOW_BUNDLE_NO_DOWNLOAD"
     BRICKFLOW_BUNDLE_CLI_VERSION = "BRICKFLOW_BUNDLE_CLI_VERSION"
+    BRICKFLOW_BUNDLE_CLI_ALLOW_UNVERIFIED_SNAPSHOT = (
+        "BRICKFLOW_BUNDLE_CLI_ALLOW_UNVERIFIED_SNAPSHOT"
+    )
     BRICKFLOW_MONOREPO_PATH_TO_BUNDLE_ROOT = "BRICKFLOW_MONOREPO_PATH_TO_BUNDLE_ROOT"
 
     BRICKFLOW_ENABLE_PLUGINS = "BRICKFLOW_ENABLE_PLUGINS"
@@ -130,6 +133,7 @@ class BrickflowProjectDeploymentSettings:
         self.brickflow_bundle_cli_exec = Empty()
         self.brickflow_bundle_no_download = Empty()
         self.brickflow_bundle_cli_version = Empty()
+        self.brickflow_bundle_cli_allow_unverified_snapshot = Empty()
         self.brickflow_monorepo_path_to_bundle_root = Empty()
         self.brickflow_enable_plugins = Empty()
         self.brickflow_project_runtime_version = Empty()
