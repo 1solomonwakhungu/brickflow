@@ -270,6 +270,10 @@ class AirflowTaskDependencySensor(Sensor):
         status = ""
         while status not in self.allowed_states:
             status = self.poke()
+            if status in self.allowed_states:
+                if (time.time() - self._start_time) > self.timeout:
+                    raise TimeoutError("The job has timed out!")
+                break
             if status == "failed":
                 # Log the fact that upstream failed, however do not fail the task
                 # and continue poking until timeout.
@@ -279,10 +283,8 @@ class AirflowTaskDependencySensor(Sensor):
                     self.dag_id,
                     self.task_id,
                 )
-                time.sleep(self.poke_interval)
-            elif status != "success":
-                time.sleep(self.poke_interval)
+            time.sleep(self.poke_interval)
 
             if (time.time() - self._start_time) > self.timeout:
                 raise TimeoutError("The job has timed out!")
-        log.info("Upstream DAG '%s' is successful", self.dag_id)
+        log.info("Upstream DAG '%s' reached allowed state '%s'", self.dag_id, status)

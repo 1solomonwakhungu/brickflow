@@ -1,4 +1,7 @@
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
+from unittest.mock import Mock
+import importlib
 
 import pytest
 from requests.exceptions import HTTPError
@@ -369,3 +372,76 @@ class TestAirflowTaskDependencySensor:
         with api:
             task_status = sensor.get_execution_stats(execution_date=execution_date)
         assert task_status == "success"
+
+    def _polling_sensor(self, mocker, monkeypatch, allowed_states, version="2.0.2"):
+        sensor = self._make_sensor(mocker, "test-polling", version=version)
+        sensor.allowed_states = allowed_states
+        sensor._start_time = 0
+        sensor.timeout = 30
+        sensor.poke_interval = 60
+        clock = SimpleNamespace(now=0, events=[])
+
+        def sleep(seconds):
+            clock.events.append(("sleep", seconds))
+            clock.now += seconds
+
+        module = importlib.import_module(
+            "brickflow_plugins.sensors.airflow_task_dependency_sensor"
+        )
+        monkeypatch.setattr(
+            module, "time", SimpleNamespace(time=lambda: clock.now, sleep=sleep)
+        )
+        return sensor, clock
+
+    @pytest.mark.parametrize("version", ["1.10.15", "2.0.2", "3.0.0"])
+    @pytest.mark.parametrize("state", ["success", "running", "failed", "skipped"])
+    def test_allowed_state_returns_without_sleep(
+        self, mocker, monkeypatch, state, version
+    ):
+        sensor, clock = self._polling_sensor(mocker, monkeypatch, [state], version)
+        sensor.poke = Mock(return_value=state)
+
+        sensor.execute()
+
+        sensor.poke.assert_called_once_with()
+        assert clock.events == []
+
+    def test_rejected_success_sleeps_before_next_poke(self, mocker, monkeypatch):
+        sensor, clock = self._polling_sensor(mocker, monkeypatch, ["failed"])
+        sensor.poke_interval = 5
+        states = iter(["success", "failed"])
+
+        def poke():
+            state = next(states)
+            clock.events.append(("poke", state))
+            return state
+
+        sensor.poke = poke
+        sensor.execute()
+
+        assert clock.events == [("poke", "success"), ("sleep", 5), ("poke", "failed")]
+
+    @pytest.mark.parametrize("state", ["success", "running", "failed", ""])
+    def test_rejected_state_sleeps_and_times_out(self, mocker, monkeypatch, state):
+        sensor, clock = self._polling_sensor(mocker, monkeypatch, ["skipped"])
+        sensor.poke = Mock(
+            side_effect=[state, AssertionError("must time out after first sleep")]
+        )
+
+        with pytest.raises(TimeoutError):
+            sensor.execute()
+
+        sensor.poke.assert_called_once_with()
+        assert clock.events == [("sleep", 60)]
+
+    def test_accepted_poke_after_deadline_still_times_out(self, mocker, monkeypatch):
+        sensor, clock = self._polling_sensor(mocker, monkeypatch, ["success"])
+
+        def poke():
+            clock.now = 31
+            return "success"
+
+        sensor.poke = poke
+        with pytest.raises(TimeoutError):
+            sensor.execute()
+        assert clock.events == []
