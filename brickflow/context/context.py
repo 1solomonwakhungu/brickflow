@@ -202,9 +202,9 @@ def _check_int_digits(value: int, limits: TaskValueLimits) -> None:
         )
 
 
-def _to_json_tree(
-    value: Any, budget: _Budget, depth: int = 0
-) -> Any:  # pylint: disable=too-many-return-statements
+# Each supported wire type has its own explicit return.
+# pylint: disable-next=too-many-return-statements
+def _to_json_tree(value: Any, budget: _Budget, depth: int = 0) -> Any:
     budget.visit(depth)
     value_type = type(value)
     if value is None or value_type in (bool, str):
@@ -264,9 +264,9 @@ def _expect(cond: bool, message: str) -> None:
         raise TaskValueSerializationError(f"Malformed task value: {message}")
 
 
-def _from_json_tree(
-    node: Any, budget: _Budget, depth: int = 0
-) -> Any:  # pylint: disable=too-many-return-statements
+# Each supported wire type has its own explicit return.
+# pylint: disable-next=too-many-return-statements
+def _from_json_tree(node: Any, budget: _Budget, depth: int = 0) -> Any:
     budget.visit(depth)
     if node is None or isinstance(node, (bool, str, int, float)):
         return node
