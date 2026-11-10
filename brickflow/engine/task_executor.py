@@ -3,6 +3,7 @@
 import os
 import re
 import secrets
+import stat
 import sys
 import tempfile
 from pathlib import Path
@@ -25,6 +26,13 @@ class ArtifactDownloadError(requests.RequestException):
 
     Messages never contain URL user-info or query strings.
     """
+
+
+class _ArtifactSession(requests.Session):
+    """Keep cookies without Requests preparing and buffering redirect bodies."""
+
+    def resolve_redirects(self, response, request, **kwargs):
+        return iter(())
 
 
 def redact_url(url: str) -> str:
@@ -57,7 +65,9 @@ def _origin(url: str) -> Tuple[str, str, int]:
         host = (parts.hostname or "").lower()
         port = parts.port
     except ValueError as e:
-        raise ArtifactDownloadError(f"Invalid artifact URL: {redact_url(url)}") from e
+        raise ArtifactDownloadError(
+            f"Invalid artifact URL: {redact_url(url)}"
+        ) from None
     if scheme not in _DEFAULT_PORTS or not host:
         raise ArtifactDownloadError(
             f"Unsupported artifact URL (only http and https are allowed): "
@@ -128,9 +138,15 @@ def _write_atomically(target: Path, chunks: Iterable[bytes], mode: int) -> None:
     ``target`` is replaced rather than followed. The temporary file is removed if
     anything fails.
     """
+    try:
+        existing = target.lstat()
+    except FileNotFoundError:
+        existing = None
     fd, staging = _open_exclusive_sibling(target, mode)
     try:
         with os.fdopen(fd, "wb") as f:
+            if existing is not None and stat.S_ISREG(existing.st_mode):
+                os.fchmod(f.fileno(), stat.S_IMODE(existing.st_mode))
             for chunk in chunks:
                 f.write(chunk)
         os.replace(staging, target)
@@ -173,6 +189,8 @@ class ArtifactoryClient:
         api_key: Optional[str] = None,
         max_redirects: int = DEFAULT_MAX_REDIRECTS,
         max_bytes: int = DEFAULT_MAX_BYTES,
+        ca_bundle: Optional[str] = None,
+        proxies: Optional[Dict[str, str]] = None,
     ):
         if max_redirects < 0:
             raise ValueError("max_redirects must not be negative")
@@ -182,6 +200,8 @@ class ArtifactoryClient:
         self.api_key = api_key
         self.max_redirects = max_redirects
         self.max_bytes = max_bytes
+        self.ca_bundle = ca_bundle
+        self.proxies = dict(proxies or {})
 
     @property
     def has_credentials(self) -> bool:
@@ -208,9 +228,25 @@ class ArtifactoryClient:
         seen_urls: List[str] = [url]
         created_destination: Optional[Path] = None
         succeeded = False
+        session = _ArtifactSession()
+        session.trust_env = False
+        session.verify = (
+            self.ca_bundle
+            or os.environ.get("REQUESTS_CA_BUNDLE")
+            or os.environ.get("CURL_CA_BUNDLE")
+            or True
+        )
+        session.proxies = self.proxies
         try:
-            response = self._open(url, seen_urls)
+            response = self._open(url, seen_urls, session)
             try:
+                encoding = (
+                    response.headers.get("Content-Encoding", "identity").strip().lower()
+                )
+                if encoding not in ("", "identity"):
+                    raise ArtifactDownloadError(
+                        "Unexpected artifact Content-Encoding; identity required"
+                    )
                 declared = _content_length(response)
                 if declared is not None and declared > self.max_bytes:
                     raise ArtifactDownloadError(
@@ -237,31 +273,27 @@ class ArtifactoryClient:
             return destination
 
         except Exception as e:
-            message = _sanitize_message(str(e), seen_urls)
-            log.error(
-                "Failed to download artifact from %s: %s: %s",
-                safe_url,
-                type(e).__name__,
-                message,
+            # Transport exceptions can retain URLs or reflected secrets in their
+            # messages and chained causes. Keep the outward boundary deliberately
+            # narrow; response/request objects are not attached to the new error.
+            detail = (
+                str(e) if isinstance(e, ArtifactDownloadError) else type(e).__name__
             )
-            if isinstance(e, ArtifactDownloadError):
-                raise
-            if isinstance(e, requests.RequestException):
-                # Re-raise without chaining: the original message and traceback
-                # can contain the URL's user-info or query string.
-                raise ArtifactDownloadError(
-                    f"{type(e).__name__}: {message}",
-                    response=getattr(e, "response", None),
-                ) from None
-            raise
+            if isinstance(e, requests.HTTPError) and e.response is not None:
+                detail = f"HTTP status {e.response.status_code}"
+            log.error("Failed to download artifact from %s: %s", safe_url, detail)
+            raise ArtifactDownloadError(f"Artifact download failed: {detail}") from None
         finally:
+            session.close()
             if not succeeded and created_destination is not None:
                 try:
                     created_destination.unlink()
                 except FileNotFoundError:
                     pass
 
-    def _open(self, url: str, seen_urls: List[str]) -> requests.Response:
+    def _open(
+        self, url: str, seen_urls: List[str], session: requests.Session
+    ) -> requests.Response:
         """Issue the GET request, following redirects under the download policy."""
         credentialed = self.has_credentials or _has_userinfo(url)
         initial_origin = _origin(url)
@@ -289,7 +321,7 @@ class ArtifactoryClient:
             if send_api_key:
                 headers[self.API_KEY_HEADER] = self.api_key  # type: ignore[assignment]
 
-            response = requests.get(
+            response = session.get(
                 current,
                 headers=headers,
                 stream=True,
@@ -316,7 +348,17 @@ class ArtifactoryClient:
                     f"while downloading {redact_url(url)}"
                 )
             redirects += 1
-            current = urljoin(current, location)
+            redirected = urljoin(current, location)
+            if _has_userinfo(redirected):
+                initial_parts, next_parts = urlsplit(url), urlsplit(redirected)
+                if _origin(redirected) != initial_origin or (
+                    next_parts.username,
+                    next_parts.password,
+                ) != (initial_parts.username, initial_parts.password):
+                    raise ArtifactDownloadError(
+                        "Redirect must not introduce URL credentials"
+                    )
+            current = redirected
             seen_urls.append(current)
             log.info("Following artifact redirect to: %s", redact_url(current))
 
@@ -333,6 +375,9 @@ class ArtifactoryClient:
                     f"Artifact {safe_url} exceeds the {self.max_bytes}-byte limit"
                 )
             yield chunk
+        expected = _content_length(response)
+        if expected is not None and total != expected:
+            raise ArtifactDownloadError("Incomplete artifact response")
 
     @staticmethod
     def _create_temp_destination(url: str) -> Path:

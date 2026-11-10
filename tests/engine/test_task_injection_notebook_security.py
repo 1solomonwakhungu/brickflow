@@ -247,3 +247,14 @@ class TestProjectInjection:
                 project.add_workflow(wf)
 
         assert _tree(tmp_path) == before
+
+
+def test_regeneration_preserves_private_permissions(project_dir, template):
+    notebooks = project_dir / NOTEBOOKS
+    notebooks.mkdir()
+    output = notebooks / "private.py"
+    output.write_text("old")
+    output.chmod(0o600)
+    _executor("private", template).render_to_notebook()
+    assert output.stat().st_mode & 0o777 == 0o600
+    assert "hello" in output.read_text()

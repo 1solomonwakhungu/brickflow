@@ -441,7 +441,7 @@ class TestSizeLimits:
         assert not destination.exists()
         assert _leftovers(tmp_path) == ["home", "tmp"]
 
-    def test_decoded_size_is_bounded(self, tmp_path):
+    def test_unexpected_compression_is_rejected(self, tmp_path):
         # A small gzip body that inflates far beyond the limit, sent even though
         # the client asked for identity encoding.
         compressed = gzip.compress(b"\0" * 5_000_000)
@@ -449,7 +449,7 @@ class TestSizeLimits:
         destination = tmp_path / "out.whl"
         with _Server() as plain:
             plain.routes["/bomb.whl"] = body(compressed, {"Content-Encoding": "gzip"})
-            with pytest.raises(ArtifactDownloadError, match="exceeds"):
+            with pytest.raises(ArtifactDownloadError, match="Content-Encoding"):
                 ArtifactoryClient(max_bytes=100_000).download_artifact(
                     plain.url("/bomb.whl"), destination
                 )
@@ -590,7 +590,7 @@ class TestRedaction:
 class TestMockedResponses:
     """Mocked transport checks that do not need sockets."""
 
-    @patch("brickflow.engine.task_executor.requests.get")
+    @patch("brickflow.engine.task_executor._ArtifactSession.get")
     def test_redirects_are_never_delegated_to_requests(self, mock_get, tmp_path):
         response = Mock(status_code=200, headers={})
         response.iter_content = Mock(return_value=[b"ok"])
@@ -604,7 +604,7 @@ class TestMockedResponses:
         assert mock_get.call_args.kwargs["timeout"] == ArtifactoryClient.DEFAULT_TIMEOUT
         response.close.assert_called_once()
 
-    @patch("brickflow.engine.task_executor.requests.get")
+    @patch("brickflow.engine.task_executor._ArtifactSession.get")
     def test_write_error_is_not_masked(self, mock_get, tmp_path):
         response = Mock(status_code=200, headers={})
         response.iter_content = Mock(return_value=[b"ok"])
@@ -622,3 +622,146 @@ def test_temp_root_is_isolated(tmp_path):
 
     assert Path(tempfile.gettempdir()) == tmp_path / "tmp"
     assert os.environ["HOME"] == str(tmp_path / "home")
+
+
+def test_redirect_body_is_not_read(tmp_path, monkeypatch):
+    from brickflow.engine.task_executor import _ArtifactSession
+
+    observed = []
+    original = _ArtifactSession.get
+
+    def recording(self, *args, **kwargs):
+        response = original(self, *args, **kwargs)
+        if response.is_redirect:
+            observed.append(response._content)
+        return response
+
+    monkeypatch.setattr(_ArtifactSession, "get", recording)
+    with _Server() as server:
+
+        def first(handler):
+            handler.send_response(302)
+            handler.send_header("Location", "/ok")
+            # No body is sent. Redirect preparation must not wait for it.
+            handler.send_header("Content-Length", "1000000")
+            handler.end_headers()
+            handler.close_connection = True
+
+        server.routes["/start"] = first
+        server.routes["/ok"] = body(b"ok")
+        ArtifactoryClient(max_bytes=16).download_artifact(
+            server.url("/start"), tmp_path / "out"
+        )
+    assert observed == [False]
+    assert (tmp_path / "out").read_bytes() == b"ok"
+
+
+def test_same_origin_redirect_cookie_survives(tmp_path):
+    cookies = []
+    with _Server() as server:
+
+        def first(handler):
+            handler.send_response(302)
+            handler.send_header("Location", "/ok")
+            handler.send_header("Set-Cookie", "ticket=synthetic; Path=/")
+            handler.send_header("Content-Length", "0")
+            handler.end_headers()
+
+        def second(handler):
+            cookies.append(handler.headers.get("Cookie"))
+            body(b"ok")(handler)
+
+        server.routes["/start"] = first
+        server.routes["/ok"] = second
+        ArtifactoryClient().download_artifact(server.url("/start"), tmp_path / "out")
+    assert cookies == ["ticket=synthetic"]
+
+
+def test_ambient_netrc_is_not_used(tmp_path):
+    Path(os.environ["NETRC"]).write_text(
+        "machine localhost login synthetic password secret\n"
+    )
+    with _Server() as first, _Server() as second:
+        first.routes["/start"] = redirect(
+            second.url("/ok").replace("127.0.0.1", "localhost")
+        )
+        second.routes["/ok"] = body(b"ok")
+        ArtifactoryClient().download_artifact(first.url("/start"), tmp_path / "out")
+    assert second.recorder.requests[0]["authorization"] is None
+
+
+def test_redirect_cannot_introduce_credentials(tmp_path):
+    with _Server() as first, _Server() as second:
+        first.routes["/start"] = redirect(
+            second.url("/ok").replace("://", "://synthetic:secret@")
+        )
+        second.routes["/ok"] = body(b"ok")
+        with pytest.raises(ArtifactDownloadError, match="introduce"):
+            ArtifactoryClient().download_artifact(first.url("/start"), tmp_path / "out")
+    assert not second.recorder.requests
+
+
+def test_truncated_response_preserves_destination(tmp_path):
+    destination = tmp_path / "out"
+    destination.write_bytes(b"old")
+    with _Server() as server:
+
+        def truncated(handler):
+            handler.send_response(200)
+            handler.send_header("Content-Length", "20")
+            handler.end_headers()
+            handler.wfile.write(b"short")
+            handler.close_connection = True
+
+        server.routes["/file"] = truncated
+        with pytest.raises(ArtifactDownloadError):
+            ArtifactoryClient().download_artifact(server.url("/file"), destination)
+    assert destination.read_bytes() == b"old"
+    assert not list(tmp_path.glob(".*.tmp"))
+
+
+def test_existing_private_mode_is_preserved(tmp_path):
+    from brickflow.engine.task_executor import _write_atomically
+
+    destination = tmp_path / "private"
+    destination.write_bytes(b"old")
+    destination.chmod(0o600)
+    _write_atomically(destination, [b"new"], 0o666)
+    assert destination.stat().st_mode & 0o777 == 0o600
+    assert destination.read_bytes() == b"new"
+
+
+def test_compression_rejected_before_decoding(tmp_path):
+    response = Mock(status_code=200, headers={"Content-Encoding": "gzip"})
+    with patch(
+        "brickflow.engine.task_executor._ArtifactSession.get", return_value=response
+    ):
+        with pytest.raises(ArtifactDownloadError, match="Content-Encoding"):
+            ArtifactoryClient().download_artifact(
+                "https://example.invalid/a", tmp_path / "out"
+            )
+    response.iter_content.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://localhost:synthetic_secret/a",
+        "https://localhost/a?token=synthetic_secret",
+    ],
+)
+def test_formatted_errors_do_not_expose_url_secrets(tmp_path, url):
+    import traceback
+
+    with patch(
+        "brickflow.engine.task_executor._ArtifactSession.get",
+        side_effect=ValueError(url),
+    ):
+        with pytest.raises(ArtifactDownloadError) as error:
+            ArtifactoryClient().download_artifact(url, tmp_path / "out")
+    rendered = "".join(
+        traceback.format_exception(
+            type(error.value), error.value, error.value.__traceback__
+        )
+    )
+    assert "synthetic_secret" not in rendered
