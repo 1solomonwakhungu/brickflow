@@ -57,6 +57,10 @@ from brickflow.bundles.model import (
     JobsTasksWebhookNotifications,
 )
 from brickflow.cli.projects import DEFAULT_BRICKFLOW_VERSION_MODE
+from brickflow.context.context import (
+    TaskValueSerializationError,
+    LegacyPickleTaskValueWarning,
+)
 from brickflow.context import (
     BRANCH_SKIP_EXCEPT,
     RETURN_VALUE_KEY,
@@ -1110,6 +1114,10 @@ class Task:
                         node_skip_checks.append(True)
                     else:
                         node_skip_checks.append(False)
+                except (TaskValueSerializationError, LegacyPickleTaskValueWarning):
+                    # A malformed or refused branch decision is not an absent
+                    # marker. Stop execution rather than run an unselected task.
+                    raise
                 except Exception:
                     # ignore errors as it probably doesnt exist
                     # TODO: log errors
