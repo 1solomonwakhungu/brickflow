@@ -325,6 +325,20 @@ files = [
 
 [[package]]
 name = "charset-normalizer"
+version = "2.0.12"
+description = "The Real First Universal Charset Detector. Open, modern and actively maintained alternative to Chardet."
+optional = false
+python-versions = ">=3.5.0"
+files = [
+    {file = "charset-normalizer-2.0.12.tar.gz", hash = "sha256:2857e29ff0d34db842cd7ca3230549d1a697f96ee6d3fb071cfa6c7393832597"},
+    {file = "charset_normalizer-2.0.12-py3-none-any.whl", hash = "sha256:6881edbebdb17b39b4eaaa821b438bf6eddffb4468cf344f09f89def34a8b1df"},
+]
+
+[package.extras]
+unicode-backport = ["unicodedata2"]
+
+[[package]]
+name = "charset-normalizer"
 version = "3.4.1"
 description = "The Real First Universal Charset Detector. Open, modern and actively maintained alternative to Chardet."
 optional = false
@@ -552,6 +566,46 @@ files = [
 [package.dependencies]
 python-dateutil = "*"
 pytz = ">2021.1"
+
+[[package]]
+name = "cryptography"
+version = "36.0.2"
+description = "cryptography is a package which provides cryptographic recipes and primitives to Python developers."
+optional = false
+python-versions = ">=3.6"
+files = [
+    {file = "cryptography-36.0.2-cp36-abi3-macosx_10_10_universal2.whl", hash = "sha256:4e2dddd38a5ba733be6a025a1475a9f45e4e41139d1321f412c6b360b19070b6"},
+    {file = "cryptography-36.0.2-cp36-abi3-macosx_10_10_x86_64.whl", hash = "sha256:4881d09298cd0b669bb15b9cfe6166f16fc1277b4ed0d04a22f3d6430cb30f1d"},
+    {file = "cryptography-36.0.2-cp36-abi3-manylinux_2_12_x86_64.manylinux2010_x86_64.whl", hash = "sha256:ea634401ca02367c1567f012317502ef3437522e2fc44a3ea1844de028fa4b84"},
+    {file = "cryptography-36.0.2-cp36-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.manylinux_2_24_aarch64.whl", hash = "sha256:7be666cc4599b415f320839e36367b273db8501127b38316f3b9f22f17a0b815"},
+    {file = "cryptography-36.0.2-cp36-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:8241cac0aae90b82d6b5c443b853723bcc66963970c67e56e71a2609dc4b5eaf"},
+    {file = "cryptography-36.0.2-cp36-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:7b2d54e787a884ffc6e187262823b6feb06c338084bbe80d45166a1cb1c6c5bf"},
+    {file = "cryptography-36.0.2-cp36-abi3-manylinux_2_24_x86_64.whl", hash = "sha256:c2c5250ff0d36fd58550252f54915776940e4e866f38f3a7866d92b32a654b86"},
+    {file = "cryptography-36.0.2-cp36-abi3-musllinux_1_1_aarch64.whl", hash = "sha256:ec6597aa85ce03f3e507566b8bcdf9da2227ec86c4266bd5e6ab4d9e0cc8dab2"},
+    {file = "cryptography-36.0.2-cp36-abi3-musllinux_1_1_x86_64.whl", hash = "sha256:ca9f686517ec2c4a4ce930207f75c00bf03d94e5063cbc00a1dc42531511b7eb"},
+    {file = "cryptography-36.0.2-cp36-abi3-win32.whl", hash = "sha256:f64b232348ee82f13aac22856515ce0195837f6968aeaa94a3d0353ea2ec06a6"},
+    {file = "cryptography-36.0.2-cp36-abi3-win_amd64.whl", hash = "sha256:53e0285b49fd0ab6e604f4c5d9c5ddd98de77018542e88366923f152dbeb3c29"},
+    {file = "cryptography-36.0.2-pp37-pypy37_pp73-manylinux_2_12_x86_64.manylinux2010_x86_64.whl", hash = "sha256:32db5cc49c73f39aac27574522cecd0a4bb7384e71198bc65a0d23f901e89bb7"},
+    {file = "cryptography-36.0.2-pp37-pypy37_pp73-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:d2b3d199647468d410994dbeb8cec5816fb74feb9368aedf300af709ef507e3e"},
+    {file = "cryptography-36.0.2-pp37-pypy37_pp73-manylinux_2_24_x86_64.whl", hash = "sha256:da73d095f8590ad437cd5e9faf6628a218aa7c387e1fdf67b888b47ba56a17f0"},
+    {file = "cryptography-36.0.2-pp38-pypy38_pp73-macosx_10_10_x86_64.whl", hash = "sha256:0a3bf09bb0b7a2c93ce7b98cb107e9170a90c51a0162a20af1c61c765b90e60b"},
+    {file = "cryptography-36.0.2-pp38-pypy38_pp73-manylinux_2_12_x86_64.manylinux2010_x86_64.whl", hash = "sha256:8897b7b7ec077c819187a123174b645eb680c13df68354ed99f9b40a50898f77"},
+    {file = "cryptography-36.0.2-pp38-pypy38_pp73-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:82740818f2f240a5da8dfb8943b360e4f24022b093207160c77cadade47d7c85"},
+    {file = "cryptography-36.0.2-pp38-pypy38_pp73-manylinux_2_24_x86_64.whl", hash = "sha256:1f64a62b3b75e4005df19d3b5235abd43fa6358d5516cfc43d87aeba8d08dd51"},
+    {file = "cryptography-36.0.2-pp38-pypy38_pp73-win_amd64.whl", hash = "sha256:e167b6b710c7f7bc54e67ef593f8731e1f45aa35f8a8a7b72d6e42ec76afd4b3"},
+    {file = "cryptography-36.0.2.tar.gz", hash = "sha256:70f8f4f7bb2ac9f340655cbac89d68c527af5bb4387522a8413e841e3e6628c9"},
+]
+
+[package.dependencies]
+cffi = ">=1.12"
+
+[package.extras]
+docs = ["sphinx (>=1.6.5,!=1.8.0,!=3.1.0,!=3.1.1)", "sphinx-rtd-theme"]
+docstest = ["pyenchant (>=1.6.11)", "sphinxcontrib-spelling (>=4.0.1)", "twine (>=1.12.0)"]
+pep8test = ["black", "flake8", "flake8-import-order", "pep8-naming"]
+sdist = ["setuptools-rust (>=0.11.4)"]
+ssh = ["bcrypt (>=3.1.5)"]
+test = ["hypothesis (>=1.11.4,!=3.79.2)", "iso8601", "pretend", "pytest (>=6.2.0)", "pytest-cov", "pytest-subtests", "pytest-xdist", "pytz"]
 
 [[package]]
 name = "cryptography"
@@ -1485,6 +1539,20 @@ files = [
 dev = ["black", "mypy", "pytest"]
 
 [[package]]
+name = "oscrypto"
+version = "1.3.0"
+description = "TLS (SSL) sockets, key generation, encryption, decryption, signing, verification and KDFs using the OS crypto libraries. Does not require a compiler, and relies on the OS for patching. Works on Windows, OS X and Linux/BSD."
+optional = false
+python-versions = "*"
+files = [
+    {file = "oscrypto-1.3.0-py2.py3-none-any.whl", hash = "sha256:2b2f1d2d42ec152ca90ccb5682f3e051fb55986e1b170ebde472b133713e7085"},
+    {file = "oscrypto-1.3.0.tar.gz", hash = "sha256:6f5fef59cb5b3708321db7cca56aed8ad7e662853351e7991fcf60ec606d47a4"},
+]
+
+[package.dependencies]
+asn1crypto = ">=1.5.1"
+
+[[package]]
 name = "packaging"
 version = "24.2"
 description = "Core utilities for Python packages"
@@ -1758,6 +1826,62 @@ python-versions = ">=3.8"
 files = [
     {file = "pycparser-2.22-py3-none-any.whl", hash = "sha256:c3702b6d3dd8c7abc1afa565d7e63d53a1d0bd86cdc24edd75470f4de499cfcc"},
     {file = "pycparser-2.22.tar.gz", hash = "sha256:491c8be9c040f5390f5bf44a5b07752bd07f56edf992381b05c701439eec10f6"},
+]
+
+[[package]]
+name = "pycryptodomex"
+version = "3.24.2"
+description = "Cryptographic library for Python"
+optional = false
+python-versions = "!=3.0.*,!=3.1.*,!=3.2.*,!=3.3.*,!=3.4.*,!=3.5.*,!=3.6.*,>=2.7"
+files = [
+    {file = "pycryptodomex-3.24.2-cp27-cp27m-manylinux2010_i686.whl", hash = "sha256:1a41e7ab387e3325131d30b590ccf267cf9a4d6f1454d2b88c035fa65a51e8b3"},
+    {file = "pycryptodomex-3.24.2-cp27-cp27m-manylinux2010_x86_64.whl", hash = "sha256:1a6afbdfea89f796fa6de5627f2578e12fb5fe536af9a5557687dc395f396483"},
+    {file = "pycryptodomex-3.24.2-cp27-cp27m-win32.whl", hash = "sha256:836df1706278e396679cfd6fc37651addeeabbd1e82f4f8177be3e7916e8da6b"},
+    {file = "pycryptodomex-3.24.2-cp27-cp27mu-manylinux2010_i686.whl", hash = "sha256:feea36c026018e665503555d22c6d5ba32f4a4e4465cb553f56ede8b745a5e05"},
+    {file = "pycryptodomex-3.24.2-cp27-cp27mu-manylinux2010_x86_64.whl", hash = "sha256:b6f81da21c47cac2f19d4f077804ce394566a26be2a60ba089cb22e7495db36e"},
+    {file = "pycryptodomex-3.24.2-cp313-cp313t-macosx_10_13_universal2.whl", hash = "sha256:7fced127a92e56b1978af03fe7a4d68f201032be01b3d9a024470e08e85c84da"},
+    {file = "pycryptodomex-3.24.2-cp313-cp313t-macosx_10_13_x86_64.whl", hash = "sha256:0353efc8016e7390db51f434e877f1ac363b14470cbaaf3e5f49b5aa7ca38fda"},
+    {file = "pycryptodomex-3.24.2-cp313-cp313t-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:9e5ea489775af434f8908f7b49f3d789af17ac37267776bddd0754f39e032f5e"},
+    {file = "pycryptodomex-3.24.2-cp313-cp313t-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:1f63e86c2e9e81aaaf3d4dbd9342058f8b7269dce18d9671817a7cb6d1a764b1"},
+    {file = "pycryptodomex-3.24.2-cp313-cp313t-musllinux_1_2_aarch64.whl", hash = "sha256:0cebc37b9e6e6d60887fa0d848127bfd0ec6d7faf17e8a575790c25d7726e3e9"},
+    {file = "pycryptodomex-3.24.2-cp313-cp313t-musllinux_1_2_x86_64.whl", hash = "sha256:090723ff620a969112b8fa9131e923db84996cbd39abf06a1f27be70ba1b4297"},
+    {file = "pycryptodomex-3.24.2-cp313-cp313t-win32.whl", hash = "sha256:c82511cbe3c6d743c4462ce13d49d61eee77d2a858f5944a2cbf781357ade53d"},
+    {file = "pycryptodomex-3.24.2-cp313-cp313t-win_amd64.whl", hash = "sha256:e52f33cd46f5cb4d64b1d8d24e2b912e4c1497b58b6c8074d6a4c5bff678e845"},
+    {file = "pycryptodomex-3.24.2-cp313-cp313t-win_arm64.whl", hash = "sha256:1d1b500478fb121a337d7aa10d3e5c6cbb04cb820a57327fa84fb91ac380f80d"},
+    {file = "pycryptodomex-3.24.2-cp314-cp314t-macosx_10_15_universal2.whl", hash = "sha256:af7ae2850fa3aefbd9afe24c1568dd2e57be3fad4d357d34255fae850102c53d"},
+    {file = "pycryptodomex-3.24.2-cp314-cp314t-macosx_10_15_x86_64.whl", hash = "sha256:7a4b957ebbadba2b93aeae4f127aa7850a11ee93e30b6f1c433c462544b27f7d"},
+    {file = "pycryptodomex-3.24.2-cp314-cp314t-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:9ae64620b17d63fd5d12bcf0a732073ced1e74b9c529f24703034c5fc10160c1"},
+    {file = "pycryptodomex-3.24.2-cp314-cp314t-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:fca1303bc8e9ad6a2e61e8e528161f1988776d12b7f523ec2b02e0e2e991424a"},
+    {file = "pycryptodomex-3.24.2-cp314-cp314t-musllinux_1_2_aarch64.whl", hash = "sha256:9a4c3ac63e2d7cb3773ac70de332380a100f237e1d1a85746fce6c0ff8b9d003"},
+    {file = "pycryptodomex-3.24.2-cp314-cp314t-musllinux_1_2_x86_64.whl", hash = "sha256:025ad2b590b4363d3702b9046e4a13bcb258785b76f80ceaf445f74feceb6c1a"},
+    {file = "pycryptodomex-3.24.2-cp314-cp314t-win32.whl", hash = "sha256:4c44c98eea1181da44cfba5a29b9211f02313ba4282546170b2651ce827464c6"},
+    {file = "pycryptodomex-3.24.2-cp314-cp314t-win_amd64.whl", hash = "sha256:fae18f8161b7161d9ed3db076c02386d9257c9333241b4d94e6ac21ab8886075"},
+    {file = "pycryptodomex-3.24.2-cp314-cp314t-win_arm64.whl", hash = "sha256:fe43b58a7d4a9c6aa33490f04eab4ffcd72320842dfddf1774357a54eebf09fc"},
+    {file = "pycryptodomex-3.24.2-cp37-abi3-macosx_10_9_universal2.whl", hash = "sha256:18a41772bae7b876d84c768bdec6afb95c3d16da50200956ddcc5fccd2d84549"},
+    {file = "pycryptodomex-3.24.2-cp37-abi3-macosx_10_9_x86_64.whl", hash = "sha256:3d8997bd78eb64f8ec708c556c7cefe0ea90423c05e9c64da6f532c0c7f38695"},
+    {file = "pycryptodomex-3.24.2-cp37-abi3-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:97dc6ea02ec1ed55dca0fbc98758ac23d0ca8ce9d7ea32d538c2851e23b8b27f"},
+    {file = "pycryptodomex-3.24.2-cp37-abi3-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:e340408a601003f235b50117cd16f87b2a5b4760765aafe93340eeaadeb0414d"},
+    {file = "pycryptodomex-3.24.2-cp37-abi3-musllinux_1_2_aarch64.whl", hash = "sha256:4625b5dbecb87f935febb790de09ed654daff2931dff051ffa47779ea36f6934"},
+    {file = "pycryptodomex-3.24.2-cp37-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:b6b327cb30a96c13965892be0a06717bb2cbdbf5e9b26fc4e9389a040b4b0047"},
+    {file = "pycryptodomex-3.24.2-cp37-abi3-win32.whl", hash = "sha256:54eb39451f7c8e90c9757a0a9e83b175c38c6f343ea21183f0892b40b92e9ecb"},
+    {file = "pycryptodomex-3.24.2-cp37-abi3-win_amd64.whl", hash = "sha256:6e912e3a21061bf8f4ce89223cb46f5e98a6b32420d08d770605891a2be266c6"},
+    {file = "pycryptodomex-3.24.2-cp37-abi3-win_arm64.whl", hash = "sha256:8e1b919d116ef7cfc4af189abfed0687ac52805f020e83ff1980fe53919eb88b"},
+    {file = "pycryptodomex-3.24.2-pp27-pypy_73-manylinux2010_x86_64.whl", hash = "sha256:794606ccdeb2fe9142038d5e6b8443e0dba1bfd05545e38c2ce89672e8f1a69b"},
+    {file = "pycryptodomex-3.24.2-pp27-pypy_73-win32.whl", hash = "sha256:ec10e3863195ef6818dbf89fdfbd3a6f958675807e2b34949dc742a5407d2c47"},
+    {file = "pycryptodomex-3.24.2-pp310-pypy310_pp73-macosx_10_15_x86_64.whl", hash = "sha256:d50ee153d846054853712432270c4cd1bd2dfe5dba6d3d2df35ad776bd5cfe8e"},
+    {file = "pycryptodomex-3.24.2-pp310-pypy310_pp73-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:84f63ed9c93ad71395a67c5787e0b5d998c1b4b4009c778d26eb01128e6e01b3"},
+    {file = "pycryptodomex-3.24.2-pp310-pypy310_pp73-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:109a0b54c1cd8491b3cad76cae0ae9b063882cce922faa16f0e42f7ec84e1c58"},
+    {file = "pycryptodomex-3.24.2-pp310-pypy310_pp73-win_amd64.whl", hash = "sha256:8152c322cfa02111382091da22963dd8fcdc80f15c91c22e9bce9e78b9df8519"},
+    {file = "pycryptodomex-3.24.2-pp311-pypy311_pp73-macosx_10_15_x86_64.whl", hash = "sha256:661b0595e24c9aab5fea4386a1378db1ad246af5fd5555de2197f6656ffbd393"},
+    {file = "pycryptodomex-3.24.2-pp311-pypy311_pp73-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:2df4a447838c77375e2ab820401d417298848a7897fd2a911442ee8d07bce949"},
+    {file = "pycryptodomex-3.24.2-pp311-pypy311_pp73-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:603ab25794660db410c6738faacea150e34b171c74dce06af6803a2397f74e98"},
+    {file = "pycryptodomex-3.24.2-pp311-pypy311_pp73-win_amd64.whl", hash = "sha256:87d5331d2eed11747f0275b41ac426c27d34b0e45dfa9b5b3d7d502c2988d3f5"},
+    {file = "pycryptodomex-3.24.2-pp311-pypy311_pp80-macosx_10_15_x86_64.whl", hash = "sha256:d8dc119ca5642468e4991f98661a453f0cf8d671a6767c3560c4ffeff0c1d381"},
+    {file = "pycryptodomex-3.24.2-pp311-pypy311_pp80-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:3b18c5ecbb5ea77716ea76e040e595d6690f3c84cb7ebb392663e4b8db0735e8"},
+    {file = "pycryptodomex-3.24.2-pp311-pypy311_pp80-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:c37ea490e49e0b9b4648097e3d2243948d184fe56dbad3adc6a05f2875699c6e"},
+    {file = "pycryptodomex-3.24.2-pp311-pypy311_pp80-win_amd64.whl", hash = "sha256:225d18de3ccbb08b11a2c7a9b159db51053444a568756eab92cc938ec3f15f2e"},
+    {file = "pycryptodomex-3.24.2.tar.gz", hash = "sha256:e4dbc29e2575365d15e272f769329106277649aea081e2119cf43d66950f8f8f"},
 ]
 
 [[package]]
@@ -2059,6 +2183,24 @@ pyyaml = "*"
 
 [package.extras]
 extra = ["pygments (>=2.19.1)"]
+
+[[package]]
+name = "pyopenssl"
+version = "22.0.0"
+description = "Python wrapper module around the OpenSSL library"
+optional = false
+python-versions = ">=3.6"
+files = [
+    {file = "pyOpenSSL-22.0.0-py2.py3-none-any.whl", hash = "sha256:ea252b38c87425b64116f808355e8da644ef9b07e429398bfece610f893ee2e0"},
+    {file = "pyOpenSSL-22.0.0.tar.gz", hash = "sha256:660b1b1425aac4a1bea1d94168a85d99f0b3144c869dd4390d27629d0087f1bf"},
+]
+
+[package.dependencies]
+cryptography = ">=35.0"
+
+[package.extras]
+docs = ["sphinx", "sphinx-rtd-theme"]
+test = ["flaky", "pretend", "pytest (>=3.0.1)"]
 
 [[package]]
 name = "pyopenssl"
@@ -2524,6 +2666,26 @@ files = [
 yaml = ["pyyaml"]
 
 [[package]]
+name = "setuptools"
+version = "82.0.1"
+description = "Most extensible Python build backend with support for C/C++ extension modules"
+optional = false
+python-versions = ">=3.9"
+files = [
+    {file = "setuptools-82.0.1-py3-none-any.whl", hash = "sha256:a59e362652f08dcd477c78bb6e7bd9d80a7995bc73ce773050228a348ce2e5bb"},
+    {file = "setuptools-82.0.1.tar.gz", hash = "sha256:7d872682c5d01cfde07da7bccc7b65469d3dca203318515ada1de5eda35efbf9"},
+]
+
+[package.extras]
+check = ["pytest-checkdocs (>=2.4)", "pytest-ruff (>=0.2.1)", "ruff (>=0.13.0)"]
+core = ["importlib_metadata (>=6)", "jaraco.functools (>=4)", "jaraco.text (>=3.7)", "more_itertools", "more_itertools (>=8.8)", "packaging (>=24.2)", "tomli (>=2.0.1)", "wheel (>=0.43.0)"]
+cover = ["pytest-cov"]
+doc = ["furo", "jaraco.packaging (>=9.3)", "jaraco.tidelift (>=1.4)", "pygments-github-lexers (==0.0.5)", "pyproject-hooks (!=1.1)", "rst.linker (>=1.9)", "sphinx (>=3.5)", "sphinx-favicon", "sphinx-inline-tabs", "sphinx-lint", "sphinx-notfound-page (>=1,<2)", "sphinx-reredirects", "sphinxcontrib-towncrier", "towncrier (<24.7)"]
+enabler = ["pytest-enabler (>=2.2)"]
+test = ["build[virtualenv] (>=1.0.3)", "filelock (>=3.4.0)", "ini2toml[lite] (>=0.14)", "jaraco.develop (>=7.21)", "jaraco.envs (>=2.2)", "jaraco.path (>=3.7.2)", "jaraco.test (>=5.5)", "packaging (>=24.2)", "pip (>=19.1)", "pyproject-hooks (!=1.1)", "pytest (>=6,!=8.1.*)", "pytest-home (>=0.5)", "pytest-perf", "pytest-subprocess", "pytest-timeout", "pytest-xdist (>=3)", "tomli-w (>=1.0.0)", "virtualenv (>=13.0.0)", "wheel (>=0.44.0)"]
+type = ["importlib_metadata (>=7.0.2)", "jaraco.develop (>=7.21)", "mypy (==1.18.*)", "pytest-mypy"]
+
+[[package]]
 name = "six"
 version = "1.17.0"
 description = "Python 2 and 3 compatibility utilities"
@@ -2573,6 +2735,51 @@ snowflake-legacy = "*"
 
 [package.extras]
 ml = ["snowflake-ml-python"]
+
+[[package]]
+name = "snowflake-connector-python"
+version = "2.7.9"
+description = "Snowflake Connector for Python"
+optional = false
+python-versions = ">=3.7"
+files = [
+    {file = "snowflake-connector-python-2.7.9.tar.gz", hash = "sha256:1d0fddee5baa746d41ae2b8ff105f3664e49670c0b247d4940837706d103a4ce"},
+    {file = "snowflake_connector_python-2.7.9-cp310-cp310-macosx_10_14_universal2.whl", hash = "sha256:f74572c22af7d27593f31b92259ce99bcbc79c62935b3bafb497e00978751e37"},
+    {file = "snowflake_connector_python-2.7.9-cp310-cp310-macosx_11_0_arm64.whl", hash = "sha256:e499ca45ffacb820c80a034c24aedee6af7f4b57194929bebb20f7be554c7657"},
+    {file = "snowflake_connector_python-2.7.9-cp310-cp310-manylinux_2_12_x86_64.manylinux2010_x86_64.manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:80c0f2cabcde625a126daca4418098eb7c25a43b32314810f68cfda27f4dae2f"},
+    {file = "snowflake_connector_python-2.7.9-cp310-cp310-win_amd64.whl", hash = "sha256:c6d39c73603f0f56e02c5dd3a964ae2c46373d23ff5a2c2f239af11a080e2d0d"},
+    {file = "snowflake_connector_python-2.7.9-cp37-cp37m-macosx_10_14_x86_64.whl", hash = "sha256:52fc6ab1d98d73b251e3e07358ea8e62ef95bbf98f4e5693e14fdfbef36c2063"},
+    {file = "snowflake_connector_python-2.7.9-cp37-cp37m-manylinux_2_12_x86_64.manylinux2010_x86_64.manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:38ab73842ababc1545fc367cfb0c2e96114a572d531793e9631c66a3030089dd"},
+    {file = "snowflake_connector_python-2.7.9-cp37-cp37m-win_amd64.whl", hash = "sha256:c414a6a313866e628211d22e4ccc5faa22c0eba5ffe10ab14b62582005f569f8"},
+    {file = "snowflake_connector_python-2.7.9-cp38-cp38-macosx_10_14_x86_64.whl", hash = "sha256:d09503a78843fbed286a03131aeceec68f7487148258f7116c4fe27bc3203a9c"},
+    {file = "snowflake_connector_python-2.7.9-cp38-cp38-macosx_11_0_arm64.whl", hash = "sha256:b4be516b0bb4156a9226cafc9cfd2620e307f5e2bde097c889ef841391b211ad"},
+    {file = "snowflake_connector_python-2.7.9-cp38-cp38-manylinux_2_12_x86_64.manylinux2010_x86_64.manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:e3d897f670fdf54bf5564d559fc78e7039fb1e55ffc9d1d518d35e651fd93476"},
+    {file = "snowflake_connector_python-2.7.9-cp38-cp38-win_amd64.whl", hash = "sha256:44d1a54f998221bbc9f613cc708bd64548e3eda14eebd09f6bc2d23ba7a7b301"},
+    {file = "snowflake_connector_python-2.7.9-cp39-cp39-macosx_10_14_universal2.whl", hash = "sha256:a76af86817110920384912a049aaf09fe53ad878dc5f8598c707b7b00b875c1d"},
+    {file = "snowflake_connector_python-2.7.9-cp39-cp39-macosx_11_0_arm64.whl", hash = "sha256:6cd0078cf0014b82128729775c92b206734a88922223d86cfcee105bf1c46281"},
+    {file = "snowflake_connector_python-2.7.9-cp39-cp39-manylinux_2_12_x86_64.manylinux2010_x86_64.manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:b42a2bc3b6055846e34177bdb43b8caea1b4da0bc60b2618aa08a43f3bd26c6d"},
+    {file = "snowflake_connector_python-2.7.9-cp39-cp39-win_amd64.whl", hash = "sha256:2a0733a0fe98256e3087f7dc8fc73344fa3b0513542d65456a3014cb6059878e"},
+]
+
+[package.dependencies]
+asn1crypto = ">0.24.0,<2.0.0"
+certifi = ">=2017.4.17"
+cffi = ">=1.9,<2.0.0"
+charset-normalizer = ">=2.0.0,<2.1.0"
+cryptography = ">=3.1.0,<37.0.0"
+idna = ">=2.5,<4"
+oscrypto = "<2.0.0"
+pycryptodomex = ">=3.2,<3.5.0 || >3.5.0,<4.0.0"
+pyjwt = "<3.0.0"
+pyOpenSSL = ">=16.2.0,<23.0.0"
+pytz = "*"
+requests = "<3.0.0"
+setuptools = ">34.0.0"
+
+[package.extras]
+development = ["Cython", "coverage", "more-itertools", "numpy (<1.23.0)", "pendulum (!=2.1.1)", "pexpect", "pytest (<7.2.0)", "pytest-cov", "pytest-rerunfailures", "pytest-timeout", "pytest-xdist", "pytzdata"]
+pandas = ["pandas (>=1.0.0,<1.5.0)", "pyarrow (>=6.0.0,<6.1.0)"]
+secure-local-storage = ["keyring (!=16.1.0,<24.0.0)"]
 
 [[package]]
 name = "snowflake-connector-python"
@@ -2696,6 +2903,27 @@ urllib3 = ">=1.26.8,<1.27.0"
 
 [package.extras]
 test = ["argparse", "black", "mock", "mypy", "pytest (>=7.0)", "pytest-subtests", "requests-mock (>=1.0,<2.0)"]
+
+[[package]]
+name = "tableauserverclient"
+version = "0.41"
+description = "A Python module for working with the Tableau Server REST API."
+optional = false
+python-versions = ">=3.10"
+files = [
+    {file = "tableauserverclient-0.41-py3-none-any.whl", hash = "sha256:c1d5bed75d22899847f44c7ee0fdf9b12cf8f4a855c49d6100f2f6c6ea4fe2a3"},
+    {file = "tableauserverclient-0.41.tar.gz", hash = "sha256:e491975b9f0e19467fb6423b814511a9f549c22bce78c868079a25fbe81a0e95"},
+]
+
+[package.dependencies]
+defusedxml = ">=0.7.1"
+packaging = ">=23.1"
+requests = ">=2.32"
+typing_extensions = ">=4.0"
+urllib3 = ">=2.6.0,<3"
+
+[package.extras]
+test = ["black (==26.3.1)", "build", "mypy (==1.4)", "pytest (>=7.0)", "pytest-cov", "pytest-subtests", "pytest-xdist", "requests-mock (>=1.0,<2.0)", "types-requests (>=2.32.4.20250913)"]
 
 [[package]]
 name = "toml"
@@ -2835,6 +3063,23 @@ secure = ["certifi", "cryptography (>=1.3.4)", "idna (>=2.0.0)", "ipaddress", "p
 socks = ["PySocks (>=1.5.6,!=1.5.7,<2.0)"]
 
 [[package]]
+name = "urllib3"
+version = "2.8.0"
+description = "HTTP library with thread-safe connection pooling, file post, and more."
+optional = false
+python-versions = ">=3.10"
+files = [
+    {file = "urllib3-2.8.0-py3-none-any.whl", hash = "sha256:0cf3cae568d36aa9576b28dfb35f11328f1cb974ca7647d9475ebb86c75ac6e3"},
+    {file = "urllib3-2.8.0.tar.gz", hash = "sha256:63bf2ead4c879426ebf22ef2a781eeb4aa3b4ae798a0435506f8687fd5bb9b63"},
+]
+
+[package.extras]
+brotli = ["brotli (>=1.2.0)", "brotlicffi (>=1.2.0.0)"]
+h2 = ["h2 (>=4,<5)"]
+socks = ["pysocks (>=1.5.6,!=1.5.7,<2.0)"]
+zstd = ["backports-zstd (>=1.0.0)"]
+
+[[package]]
 name = "verspec"
 version = "0.1.0"
 description = "Flexible version handling"
@@ -2927,13 +3172,13 @@ test = ["big-O", "importlib-resources", "jaraco.functools", "jaraco.itertools", 
 type = ["pytest-mypy"]
 
 [extras]
-all-plugins = ["boxsdk", "cerberus-python-client", "snowflake", "tableauserverclient"]
+all-plugins = ["boxsdk", "cerberus-python-client", "snowflake", "tableauserverclient", "tableauserverclient"]
 box = ["boxsdk"]
 cerberus = ["cerberus-python-client"]
 snowflake = ["snowflake"]
-tableau = ["tableauserverclient"]
+tableau = ["tableauserverclient", "tableauserverclient"]
 
 [metadata]
 lock-version = "2.0"
 python-versions = ">=3.9,<3.13"
-content-hash = "7666749ebdb83114c369b15fa5e053c3f6c40c50916c4438b939531f4571d774"
+content-hash = "f73fef27c5e6d631a2c4bfb570dc3e24f48816b3f31fb187a5afc92acc8889e7"

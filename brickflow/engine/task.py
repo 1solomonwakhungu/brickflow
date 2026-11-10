@@ -1295,11 +1295,14 @@ def get_brickflow_libraries(enable_plugins: bool = False) -> List[TaskLibrary]:
 
     # IMPORTANT: Make sure that library versions in this function are aligned with the versions
     # from poetry.lock / pyproject.toml. This set of libraries is also validated through tests/test_plugins.py
+    # tableauserverclient resolves differently per Python version (see pyproject.toml), so it is
+    # pinned with PEP 508 environment markers; pip installs only the entry matching the cluster's Python.
     if settings.brickflow_enable_plugins is True or enable_plugins is True:
         return [
             bf_lib,
             PypiTaskLibrary("snowflake==1.5.1"),
-            PypiTaskLibrary("tableauserverclient==0.25"),
+            PypiTaskLibrary('tableauserverclient==0.25; python_version < "3.10"'),
+            PypiTaskLibrary('tableauserverclient==0.41; python_version >= "3.10"'),
             PypiTaskLibrary("boxsdk==3.13.0"),
             PypiTaskLibrary("cerberus-python-client==2.5.4"),
         ]

@@ -25,6 +25,18 @@ minimum = "2026.10.18"
 reason = "GHSA-6q48-6c7w-9gw2: compromised emSign intermediate CA keys."
 
 [[floor]]
+package = "urllib3"
+minimum = "2.8.0"
+python = ["3.10", "3.11", "3.12"]
+reason = "Streaming decompression, chunk parsing and proxy TLS advisories fixed through 2.8.0."
+
+[[floor]]
+package = "urllib3"
+minimum = "1.26.20"
+python = ["3.9"]
+reason = "Newest release compatible with botocore and snowflake-connector-python on Python 3.9."
+
+[[floor]]
 package = "requests"
 minimum = "2.33.0"
 python = ["3.10", "3.11", "3.12"]
@@ -41,33 +53,15 @@ package = "jinja2"
 minimum = "3.1.6"
 reason = "GHSA-cpwx-vrp4-4pq7."
 
-# ---------------------------------------------------------------------------
-# urllib3 1.26.20 (DEP-02).
-# ---------------------------------------------------------------------------
-
-[[exception]]
-package = "urllib3"
-versions = ["1.26.20"]
+[[floor]]
+package = "tableauserverclient"
+minimum = "0.41"
 python = ["3.10", "3.11", "3.12"]
-advisories = [
-    "GHSA-2xpw-w6gg-jr37",
-    "GHSA-gm62-xv2j-4w53",
-    "GHSA-38jv-5279-wg99",
-    "GHSA-vxq7-64xx-v4gw",
-    "GHSA-pq67-6m6q-mj2v",
-    "GHSA-qccp-gfcp-xxvc",
-    "GHSA-8988-9cw3-xx77",
-]
-classification = "deferred-upgrade"
-review_by = 2026-12-15
-reason = """
-Python 3.10-3.12. tableauserverclient 0.25 (tableau extra and the plugin
-library list Brickflow installs on Databricks clusters) requires
-urllib3 ~= 1.26.8, which holds the whole lock on 1.26.20. Reachable:
-Brickflow's artifact download streams through requests/urllib3. Fixed by the
-DEP-02 change (tableauserverclient 0.41, urllib3 >= 2.8.0), which needs the
-cluster library list in brickflow/engine/task.py updated in the same release.
-"""
+reason = "Moves the Tableau extra off the urllib3 1.26 pin (DEP-02)."
+
+# ---------------------------------------------------------------------------
+# Python 3.9: blocked by other supported extras, not fixed.
+# ---------------------------------------------------------------------------
 
 [[exception]]
 package = "urllib3"
