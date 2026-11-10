@@ -27,7 +27,7 @@ from brickflow.engine.task_executor import (
 
 SENTINEL_KEY = "SENTINEL-ARTIFACT-KEY-0d9c7a"
 SENTINEL_QUERY_TOKEN = "SENTINEL-QUERY-TOKEN-4b21"
-SENTINEL_PASSWORD = "SENTINEL-URL-PASSWORD-77e0"
+SENTINEL_USERINFO = "SENTINEL-URL-PASSWORD-77e0"
 KEY_HEADER = "X-JFrog-Art-Api"
 
 
@@ -163,8 +163,8 @@ def isolated_environment(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr("tempfile.tempdir", str(temp_root))
 
 
-@pytest.fixture(scope="module")
-def tls_material(tmp_path_factory) -> Tuple[Path, Path]:
+@pytest.fixture(scope="module", name="tls_material")
+def tls_material_fixture(tmp_path_factory) -> Tuple[Path, Path]:
     pytest.importorskip("cryptography")
     from cryptography import x509
     from cryptography.hazmat.primitives import hashes, serialization
@@ -205,8 +205,10 @@ def tls_material(tmp_path_factory) -> Tuple[Path, Path]:
     return cert_path, key_path
 
 
-@pytest.fixture
-def https_server_factory(tls_material, monkeypatch) -> Iterator[Callable[[], _Server]]:
+@pytest.fixture(name="https_server_factory")
+def https_server_factory_fixture(
+    tls_material, monkeypatch
+) -> Iterator[Callable[[], _Server]]:
     cert_path, key_path = tls_material
     # requests reads the trust store from this variable (trust_env=True).
     monkeypatch.setenv("REQUESTS_CA_BUNDLE", str(cert_path))
@@ -219,8 +221,8 @@ def https_server_factory(tls_material, monkeypatch) -> Iterator[Callable[[], _Se
     yield make
 
 
-@pytest.fixture
-def internal_log() -> Iterator[List[str]]:
+@pytest.fixture(name="internal_log")
+def internal_log_fixture() -> Iterator[List[str]]:
     """Capture brickflow's internal logger, which does not propagate."""
     records: List[str] = []
 
@@ -310,7 +312,7 @@ class TestCredentialedRedirects:
                     secure.url("/artifact.whl"), destination
                 )
 
-        assert plain.recorder.requests == []
+        assert not plain.recorder.requests
         assert not destination.exists()
         assert _leftovers(tmp_path) == ["home", "tmp"]
 
@@ -335,17 +337,17 @@ class TestCredentialedRedirects:
                 _credentialed().download_artifact(
                     plain.url("/artifact.whl"), tmp_path / "out.whl"
                 )
-        assert plain.recorder.requests == []
+        assert not plain.recorder.requests
 
     def test_userinfo_url_requires_https(self, tmp_path):
         with _Server() as plain:
             url = plain.url("/a.whl").replace(
-                "http://", f"http://synthetic:{SENTINEL_PASSWORD}@"
+                "http://", f"http://synthetic:{SENTINEL_USERINFO}@"
             )
             with pytest.raises(ArtifactDownloadError) as excinfo:
                 ArtifactoryClient().download_artifact(url, tmp_path / "out.whl")
-        assert plain.recorder.requests == []
-        assert SENTINEL_PASSWORD not in str(excinfo.value)
+        assert not plain.recorder.requests
+        assert SENTINEL_USERINFO not in str(excinfo.value)
 
     def test_redirect_limit(self, https_server_factory, tmp_path):
         origin = https_server_factory()
@@ -525,7 +527,7 @@ class TestFilesystemSafety:
 class TestRedaction:
     def test_redact_url(self):
         assert (
-            redact_url(f"https://u:{SENTINEL_PASSWORD}@h.example:8443/p.whl?t=1#f")
+            redact_url(f"https://u:{SENTINEL_USERINFO}@h.example:8443/p.whl?t=1#f")
             == "https://h.example:8443/p.whl?<redacted>#<redacted>"
         )
         assert redact_url("http://h.example/p.whl") == "http://h.example/p.whl"
@@ -555,7 +557,7 @@ class TestRedaction:
             port = plain.httpd.server_port
         # The server is closed, so the connection is refused.
         url = (
-            f"https://synthetic:{SENTINEL_PASSWORD}@127.0.0.1:{port}"
+            f"https://synthetic:{SENTINEL_USERINFO}@127.0.0.1:{port}"
             f"/a.whl?token={SENTINEL_QUERY_TOKEN}"
         )
         with pytest.raises(ArtifactDownloadError) as excinfo:
@@ -565,7 +567,7 @@ class TestRedaction:
 
         rendered = [str(excinfo.value)] + internal_log
         for text in rendered:
-            for secret in (SENTINEL_QUERY_TOKEN, SENTINEL_PASSWORD, SENTINEL_KEY):
+            for secret in (SENTINEL_QUERY_TOKEN, SENTINEL_USERINFO, SENTINEL_KEY):
                 assert secret not in text
         assert any("127.0.0.1" in text for text in internal_log)
 
@@ -679,7 +681,7 @@ def test_same_origin_redirect_cookie_survives(tmp_path):
 
 def test_ambient_netrc_is_not_used(tmp_path):
     Path(os.environ["NETRC"]).write_text(
-        "machine localhost login synthetic password secret\n"
+        "machine localhost login synthetic password secret\n", encoding="utf-8"
     )
     with _Server() as first, _Server() as second:
         first.routes["/start"] = redirect(

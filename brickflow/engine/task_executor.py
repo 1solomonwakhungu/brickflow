@@ -7,7 +7,7 @@ import stat
 import sys
 import tempfile
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, Tuple
 from urllib.parse import urljoin, urlsplit, urlunsplit
 
 import requests
@@ -31,7 +31,29 @@ class ArtifactDownloadError(requests.RequestException):
 class _ArtifactSession(requests.Session):
     """Keep cookies without Requests preparing and buffering redirect bodies."""
 
-    def resolve_redirects(self, response, request, **kwargs):
+    def resolve_redirects(
+        self,
+        resp: Any,
+        req: Any,
+        stream: bool = False,
+        timeout: Any = None,
+        verify: bool = True,
+        cert: Any = None,
+        proxies: Any = None,
+        yield_requests: bool = False,
+        **adapter_kwargs: Any,
+    ) -> Iterator[requests.PreparedRequest]:
+        del (
+            resp,
+            req,
+            stream,
+            timeout,
+            verify,
+            cert,
+            proxies,
+            yield_requests,
+            adapter_kwargs,
+        )
         return iter(())
 
 
@@ -64,7 +86,7 @@ def _origin(url: str) -> Tuple[str, str, int]:
         scheme = parts.scheme.lower()
         host = (parts.hostname or "").lower()
         port = parts.port
-    except ValueError as e:
+    except ValueError:
         raise ArtifactDownloadError(
             f"Invalid artifact URL: {redact_url(url)}"
         ) from None

@@ -48,8 +48,8 @@ INVALID_NAMES = [
 ]
 
 
-@pytest.fixture
-def project_dir(tmp_path, monkeypatch) -> Path:
+@pytest.fixture(name="project_dir")
+def project_directory_fixture(tmp_path, monkeypatch) -> Path:
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
@@ -63,8 +63,8 @@ def project_dir(tmp_path, monkeypatch) -> Path:
     return project
 
 
-@pytest.fixture
-def template(tmp_path) -> Path:
+@pytest.fixture(name="template")
+def template_fixture(tmp_path) -> Path:
     path = tmp_path / "template.py.j2"
     path.write_text("print('{{ greeting }}')\n")
     return path
@@ -133,9 +133,8 @@ class TestNotebookContainment:
         assert "print('hello')" in written.read_text()
         assert os.listdir(project_dir / NOTEBOOKS) == ["etl_task.py"]
 
-    def test_name_mutated_after_validation_is_rechecked(
-        self, project_dir, tmp_path, template
-    ):
+    @pytest.mark.usefixtures("project_dir")
+    def test_name_mutated_after_validation_is_rechecked(self, tmp_path, template):
         executor = _executor("etl_task", template)
         executor.task_def.task_name = "../../escaped-notebook"
         before = _tree(tmp_path)
@@ -156,7 +155,7 @@ class TestNotebookContainment:
         with pytest.raises(ValueError, match="real directory"):
             _executor("etl_task", template).render_to_notebook()
 
-        assert list(outside.iterdir()) == []
+        assert not list(outside.iterdir())
 
     def test_dangling_symlinked_notebook_directory_refused(
         self, project_dir, tmp_path, template
@@ -223,9 +222,8 @@ class TestNotebookContainment:
 
 
 class TestProjectInjection:
-    def test_traversal_name_in_config_fails_without_writing(
-        self, project_dir, tmp_path, template
-    ):
+    @pytest.mark.usefixtures("project_dir")
+    def test_traversal_name_in_config_fails_without_writing(self, tmp_path, template):
         config = tmp_path / "inject.yaml"
         config.write_text(
             "tasks:\n"
