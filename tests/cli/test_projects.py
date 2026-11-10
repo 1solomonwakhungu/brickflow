@@ -25,7 +25,7 @@ def test_project_deploy_routes_validation_option(monkeypatch, mocker, skip_valid
     for parameter in projects_module.deploy_project.params:
         if parameter.name == "project":
             monkeypatch.setattr(parameter, "type", click.Choice(["analytics"]))
-    deploy = mocker.patch("brickflow.cli.projects.bundle_deploy")
+    deploy = mocker.patch.object(projects_module, "bundle_deploy")
     # Restore environment bindings after Click's callbacks run.
     monkeypatch.setenv("BRICKFLOW_ENV", "local")
     monkeypatch.setenv("DATABRICKS_CONFIG_PROFILE", "synthetic")
