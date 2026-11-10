@@ -9,12 +9,14 @@ import os
 import platform
 import posixpath
 import re
+import shutil
 import stat
+import struct
 import tempfile
 import zlib
 from urllib.parse import urljoin, urlsplit, urlunsplit
 import zipfile
-from typing import Any, Callable, Optional, Union
+from typing import Any, Callable, Iterator, Optional, Union
 
 import requests
 from requests.auth import AuthBase
@@ -192,17 +194,19 @@ DATABRICKS_CLI_RELEASE_BASE_URL = "https://github.com/databricks/cli/releases/do
 # Opt-in for the mutable ``snapshot`` release, which publishes no SHA256SUMS
 # asset. Resource and layout limits still apply when it is enabled.
 BRICKFLOW_BUNDLE_CLI_ALLOW_UNVERIFIED_SNAPSHOT = (
-    "BRICKFLOW_BUNDLE_CLI_ALLOW_UNVERIFIED_SNAPSHOT"
+    BrickflowEnvVars.BRICKFLOW_BUNDLE_CLI_ALLOW_UNVERIFIED_SNAPSHOT.value
 )
 
 CLI_CACHE_ROOT = os.path.join(".databricks", "bin", "cli")
 CLI_CACHE_MARKER = ".brickflow-cli-integrity.json"
+CLI_CACHE_POINTER = "current"
 
 # Limits sized well above the 0.236.1 release (about 10 MiB archives holding
 # four members and a ~31 MiB binary) while bounding memory, disk and CPU use.
 MAX_CHECKSUM_BYTES = 64 * 1024
 MAX_ARCHIVE_BYTES = 256 * 1024 * 1024
 MAX_ARCHIVE_MEMBERS = 64
+MAX_CENTRAL_DIRECTORY_BYTES = 256 * 1024
 MAX_BINARY_BYTES = 512 * 1024 * 1024
 MAX_TOTAL_EXPANDED_BYTES = 1024 * 1024 * 1024
 MAX_DOWNLOAD_REDIRECTS = 5
@@ -212,9 +216,20 @@ _CHUNK_SIZE = 64 * 1024
 _REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 _CLI_BINARY_NAMES = frozenset({"databricks", "databricks.exe"})
 _VERSION_PATTERN = re.compile(
-    r"^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z][0-9A-Za-z.-]*)?$"
+    r"[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z][0-9A-Za-z.-]*)?"
 )
 _CHECKSUM_LINE_PATTERN = re.compile(r"^([0-9a-fA-F]{64}) [ *]([A-Za-z0-9._+-]+)$")
+_SHA256_HEX_PATTERN = re.compile(r"[0-9a-f]{64}")
+
+# ZIP end-of-central-directory layout (APPNOTE 4.3.16) and related signatures.
+_ZIP_EOCD = struct.Struct("<4s4H2LH")
+_ZIP_EOCD_SIGNATURE = b"PK\x05\x06"
+_ZIP64_LOCATOR_SIZE = 20
+_ZIP64_LOCATOR_SIGNATURE = b"PK\x06\x07"
+_ZIP_CENTRAL_HEADER = struct.Struct("<4s12xLLL3H8xL")
+_ZIP_CENTRAL_SIGNATURE = b"PK\x01\x02"
+# zipfile searches this many bytes (plus the end record) for the signature.
+_ZIP_EOCD_SEARCH_WINDOW = 1 << 16
 
 
 class CliIntegrityError(ClickException):
@@ -226,6 +241,22 @@ class _NoAmbientAuth(AuthBase):
 
     def __call__(self, r: requests.PreparedRequest) -> requests.PreparedRequest:
         return r
+
+
+class _ManualRedirectSession(requests.Session):
+    """Session that never prepares redirects behind the caller's back.
+
+    With ``allow_redirects=False`` Requests still builds ``Response.next`` by
+    running ``resolve_redirects``, which reads and decodes the whole redirect
+    body and performs a ``.netrc`` lookup before the caller sees the response.
+    Redirects are followed manually here, so that hidden step is disabled.
+    """
+
+    def resolve_redirects(  # type: ignore[override]
+        self, resp: Any, req: Any, *args: Any, **kwargs: Any
+    ) -> Iterator[requests.PreparedRequest]:
+        del resp, req, args, kwargs
+        return iter(())
 
 
 def bundle_download_path(version: str) -> str:
@@ -288,10 +319,13 @@ def _check_download_url(url: str, previous_scheme: Optional[str]) -> None:
 
 
 def _stream_download(url: str, limit: int, sink: Callable[[bytes], None]) -> None:
-    """Stream ``url`` into ``sink`` with redirect, scheme, size and length checks."""
+    """Stream ``url`` into ``sink`` with redirect, scheme, size and length checks.
+
+    Redirect responses are closed without reading their bodies.
+    """
     current = url
     previous_scheme: Optional[str] = None
-    with requests.Session() as session:
+    with _ManualRedirectSession() as session:
         for _ in range(MAX_DOWNLOAD_REDIRECTS + 1):
             _check_download_url(current, previous_scheme)
             try:
@@ -410,7 +444,7 @@ def _fetch_expected_sha256(checksum_url: str, archive_name: str) -> str:
 
 
 def _validate_cli_version(version: str) -> None:
-    if version == "snapshot" or _VERSION_PATTERN.match(version):
+    if version == "snapshot" or _VERSION_PATTERN.fullmatch(version):
         return
     raise CliIntegrityError(
         f"Invalid Databricks CLI version {version!r}; expected e.g. 0.236.1 or snapshot."
@@ -451,6 +485,114 @@ def _validate_member_name(name: str) -> None:
         raise CliIntegrityError(f"Unsafe path in Databricks CLI archive: {name!r}")
 
 
+def _preflight_zip_central_directory(path: str) -> None:
+    """Bound ZIP metadata before :class:`zipfile.ZipFile` parses it.
+
+    ``ZipFile`` reads the whole central directory and builds one ``ZipInfo``
+    per record before any layout check can run. This locates the end record
+    the way ``zipfile`` does, then requires a single-disk, non-ZIP64 archive
+    whose central directory is small, directly precedes the end record, and
+    holds exactly the declared number of records, all within the member limit.
+    """
+    try:
+        with open(path, "rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            file_size = handle.tell()
+            if file_size < _ZIP_EOCD.size:
+                raise CliIntegrityError("Invalid Databricks CLI archive: too small.")
+            tail_start = max(file_size - _ZIP_EOCD_SEARCH_WINDOW - _ZIP_EOCD.size, 0)
+            handle.seek(tail_start)
+            tail = handle.read(file_size - tail_start)
+            # Same search order as zipfile: an end record with no comment at
+            # the very end, otherwise the last signature in the tail.
+            eocd_index = len(tail) - _ZIP_EOCD.size
+            last = tail[eocd_index:]
+            if last[:4] != _ZIP_EOCD_SIGNATURE or last[-2:] != b"\x00\x00":
+                eocd_index = tail.rfind(_ZIP_EOCD_SIGNATURE)
+            if eocd_index < 0 or eocd_index + _ZIP_EOCD.size > len(tail):
+                raise CliIntegrityError(
+                    "Invalid Databricks CLI archive: no end of central directory."
+                )
+            (
+                _,
+                disk,
+                cd_disk,
+                disk_entries,
+                total_entries,
+                cd_size,
+                cd_offset,
+                comment_size,
+            ) = _ZIP_EOCD.unpack_from(tail, eocd_index)
+            eocd_offset = tail_start + eocd_index
+            if eocd_offset + _ZIP_EOCD.size + comment_size != file_size:
+                raise CliIntegrityError(
+                    "Invalid Databricks CLI archive: inconsistent end record."
+                )
+            locator_index = eocd_index - _ZIP64_LOCATOR_SIZE
+            zip64 = (
+                locator_index >= 0
+                and tail[locator_index : locator_index + 4] == _ZIP64_LOCATOR_SIGNATURE
+            ) or 0xFFFF in (disk, cd_disk, disk_entries, total_entries)
+            if zip64 or 0xFFFFFFFF in (cd_size, cd_offset):
+                raise CliIntegrityError(
+                    "ZIP64 Databricks CLI archives are not supported."
+                )
+            if disk != 0 or cd_disk != 0 or disk_entries != total_entries:
+                raise CliIntegrityError(
+                    "Multi-disk Databricks CLI archives are not supported."
+                )
+            if total_entries > MAX_ARCHIVE_MEMBERS:
+                raise CliIntegrityError(
+                    f"Databricks CLI archive declares {total_entries} members "
+                    f"(limit {MAX_ARCHIVE_MEMBERS})."
+                )
+            if cd_size > MAX_CENTRAL_DIRECTORY_BYTES:
+                raise CliIntegrityError(
+                    f"Databricks CLI archive central directory is {cd_size} bytes "
+                    f"(limit {MAX_CENTRAL_DIRECTORY_BYTES})."
+                )
+            # zipfile reads the cd_size bytes ending at the end record and
+            # treats any gap to cd_offset as prepended data; refuse that gap.
+            if cd_offset != eocd_offset - cd_size:
+                raise CliIntegrityError(
+                    "Invalid Databricks CLI archive: central directory offset mismatch."
+                )
+            handle.seek(cd_offset)
+            directory = handle.read(cd_size)
+    except OSError as e:
+        raise CliIntegrityError(
+            f"Unable to read the Databricks CLI archive: {e}"
+        ) from e
+    if len(directory) != cd_size:
+        raise CliIntegrityError("Invalid Databricks CLI archive: truncated directory.")
+    position = 0
+    records = 0
+    while position < cd_size:
+        if position + _ZIP_CENTRAL_HEADER.size > cd_size:
+            raise CliIntegrityError("Invalid Databricks CLI archive: truncated record.")
+        signature, _, _, _, name_size, extra_size, comment_len, _ = (
+            _ZIP_CENTRAL_HEADER.unpack_from(directory, position)
+        )
+        if signature != _ZIP_CENTRAL_SIGNATURE:
+            raise CliIntegrityError("Invalid Databricks CLI archive: bad record.")
+        name_start = position + _ZIP_CENTRAL_HEADER.size
+        if b"\x00" in directory[name_start : name_start + name_size]:
+            raise CliIntegrityError(
+                "Unsafe path in Databricks CLI archive: embedded NUL."
+            )
+        position = name_start + name_size + extra_size + comment_len
+        records += 1
+        if records > MAX_ARCHIVE_MEMBERS:
+            raise CliIntegrityError(
+                f"Databricks CLI archive has more than {MAX_ARCHIVE_MEMBERS} members."
+            )
+    if position != cd_size or records != total_entries:
+        raise CliIntegrityError(
+            f"Databricks CLI archive declares {total_entries} members "
+            f"but its central directory holds {records}."
+        )
+
+
 def _select_cli_member(archive: zipfile.ZipFile, binary_name: str) -> zipfile.ZipInfo:
     """Validate archive layout and return the single expected CLI binary member."""
     members = archive.infolist()
@@ -463,6 +605,8 @@ def _select_cli_member(archive: zipfile.ZipFile, binary_name: str) -> zipfile.Zi
     total = 0
     candidates = []
     for info in members:
+        # ``filename`` drops anything after a NUL; validate the stored name.
+        _validate_member_name(info.orig_filename)
         name = info.filename
         _validate_member_name(name)
         if name in seen:
@@ -515,7 +659,7 @@ def _extract_member(
     written = 0
     limit = min(info.file_size, MAX_BINARY_BYTES)
     try:
-        with archive.open(info) as source, open(destination, "wb") as target:
+        with archive.open(info) as source, open(destination, "xb") as target:
             while True:
                 chunk = source.read(_CHUNK_SIZE)
                 if not chunk:
@@ -547,42 +691,137 @@ def _file_sha256(path: str) -> str:
     return digest.hexdigest()
 
 
-def _cached_cli_is_valid(
-    binary_path: str, marker_path: str, archive_name: str, allow_unverified: bool
+def _archive_cache_directory(version: str, archive_name: str) -> str:
+    """Per-version, per-archive cache directory (``<root>/<version>/<archive>``)."""
+    return os.path.join(CLI_CACHE_ROOT, version, archive_name[: -len(".zip")])
+
+
+def _marker_accepts(
+    marker: Any, install_directory: str, archive_name: str, allow_unverified: bool
+) -> Optional[str]:
+    """Return the marker's binary SHA-256 if it describes this install."""
+    if not isinstance(marker, dict) or marker.get("archive") != archive_name:
+        return None
+    if marker.get("verified") is not True and not allow_unverified:
+        return None
+    expected = marker.get("binary_sha256")
+    if not isinstance(expected, str) or not _SHA256_HEX_PATTERN.fullmatch(expected):
+        return None
+    if os.path.basename(install_directory) != expected:
+        return None
+    return expected
+
+
+def _install_is_valid(
+    install_directory: str,
+    binary_name: str,
+    archive_name: str,
+    allow_unverified: bool,
 ) -> bool:
-    """Accept a cache entry only if its marker matches the binary on disk."""
+    """Check that one install directory holds a binary matching its own marker."""
+    binary_path = os.path.join(install_directory, binary_name)
     try:
-        if not stat.S_ISREG(os.lstat(binary_path).st_mode):
+        if not stat.S_ISDIR(os.lstat(install_directory).st_mode):
             return False
-        with open(marker_path, "r", encoding="utf-8") as handle:
+        binary_mode = os.lstat(binary_path).st_mode
+        if not stat.S_ISREG(binary_mode):
+            return False
+        with open(
+            os.path.join(install_directory, CLI_CACHE_MARKER), "r", encoding="utf-8"
+        ) as handle:
             marker = json.load(handle)
-        if not isinstance(marker, dict) or marker.get("archive") != archive_name:
+        expected = _marker_accepts(
+            marker, install_directory, archive_name, allow_unverified
+        )
+        if expected is None or not hmac.compare_digest(
+            _file_sha256(binary_path), expected
+        ):
             return False
-        if marker.get("verified") is not True and not allow_unverified:
-            return False
-        expected = marker.get("binary_sha256")
-        if not isinstance(expected, str):
-            return False
-        return hmac.compare_digest(_file_sha256(binary_path), expected)
+        if os.name != "nt" and binary_mode & 0o111 != 0o111:
+            # Content is verified; restore the execute bits a fresh install sets.
+            os.chmod(binary_path, 0o755)
+        return True
     except (OSError, ValueError):
         return False
 
 
-def _write_marker(
-    save_directory: str, marker_path: str, payload: dict[str, Any]
-) -> None:
+def _read_pointer(archive_directory: str) -> Optional[str]:
+    """Return the install directory the archive pointer names, if well formed."""
+    try:
+        with open(
+            os.path.join(archive_directory, CLI_CACHE_POINTER), "r", encoding="ascii"
+        ) as handle:
+            target = handle.read(128).strip()
+    except (OSError, ValueError):
+        return None
+    if not _SHA256_HEX_PATTERN.fullmatch(target):
+        return None
+    return os.path.join(archive_directory, target)
+
+
+def _write_pointer(archive_directory: str, binary_sha256: str) -> None:
+    """Atomically point the archive cache at a published install directory."""
     fd, temp_path = tempfile.mkstemp(
-        prefix=".marker-", suffix=".tmp", dir=save_directory
+        prefix=".pointer-", suffix=".tmp", dir=archive_directory
     )
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump(payload, handle, sort_keys=True)
+        with os.fdopen(fd, "w", encoding="ascii") as handle:
+            handle.write(binary_sha256 + "\n")
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temp_path, marker_path)
+        os.replace(temp_path, os.path.join(archive_directory, CLI_CACHE_POINTER))
     except BaseException:
         _remove_quietly(temp_path)
         raise
+
+
+def _write_marker(directory: str, payload: dict[str, Any]) -> None:
+    with open(
+        os.path.join(directory, CLI_CACHE_MARKER), "x", encoding="utf-8"
+    ) as handle:
+        json.dump(payload, handle, sort_keys=True)
+        handle.flush()
+        os.fsync(handle.fileno())
+
+
+def _publish_install(
+    staging: str,
+    install_directory: str,
+    binary_name: str,
+    archive_name: str,
+    allow_unverified: bool,
+) -> None:
+    """Rename a complete staging directory to its content-addressed name.
+
+    Install directories are named after the binary's SHA-256 and are never
+    modified after publication, so a path returned to one caller cannot later
+    receive another platform's or another install's bytes. If the name is
+    already taken by a valid install (a concurrent caller won), that one is
+    kept. An invalid occupant is moved aside first.
+    """
+    for _ in range(2):
+        try:
+            os.rename(staging, install_directory)
+            return
+        except OSError:
+            if not os.path.lexists(install_directory):
+                raise
+        if _install_is_valid(
+            install_directory, binary_name, archive_name, allow_unverified
+        ):
+            _remove_tree_quietly(staging)
+            return
+        stale = tempfile.mkdtemp(
+            prefix=".stale-", dir=os.path.dirname(install_directory)
+        )
+        try:
+            os.rename(install_directory, os.path.join(stale, "install"))
+        except FileNotFoundError:
+            pass
+        _remove_tree_quietly(stale)
+    raise CliIntegrityError(
+        f"Unable to publish the Databricks CLI install at {install_directory}."
+    )
 
 
 def _remove_quietly(path: str) -> None:
@@ -592,20 +831,70 @@ def _remove_quietly(path: str) -> None:
         pass
 
 
+def _remove_tree_quietly(path: str) -> None:
+    # A Windows executable in use cannot be deleted; leave it for later.
+    shutil.rmtree(path, ignore_errors=True)
+
+
+def _download_verified_archive(
+    url: str, archive_path: str, expected_sha256: Optional[str], archive_name: str
+) -> str:
+    archive_digest = hashlib.sha256()
+    with open(archive_path, "wb") as archive_file:
+
+        def _sink(chunk: bytes) -> None:
+            archive_digest.update(chunk)
+            archive_file.write(chunk)
+
+        _stream_download(url, MAX_ARCHIVE_BYTES, _sink)
+    actual_sha256 = archive_digest.hexdigest()
+    if expected_sha256 is not None and not hmac.compare_digest(
+        actual_sha256, expected_sha256
+    ):
+        raise CliIntegrityError(
+            f"Checksum mismatch for {archive_name}: expected {expected_sha256}, "
+            f"got {actual_sha256}."
+        )
+    return actual_sha256
+
+
+def _stage_install(
+    archive_path: str,
+    staging: str,
+    binary_name: str,
+    marker: dict[str, Any],
+) -> str:
+    """Extract the binary and its marker into ``staging``; return the binary hash."""
+    _preflight_zip_central_directory(archive_path)
+    try:
+        with zipfile.ZipFile(archive_path, "r") as archive:
+            member = _select_cli_member(archive, binary_name)
+            binary_temp = os.path.join(staging, binary_name)
+            binary_sha256 = _extract_member(archive, member, binary_temp)
+    except zipfile.BadZipFile as e:
+        raise CliIntegrityError(f"Invalid Databricks CLI archive: {e}") from e
+    os.chmod(binary_temp, 0o755)
+    _write_marker(staging, {**marker, "binary_sha256": binary_sha256})
+    return binary_sha256
+
+
 def download_and_unzip_databricks_cli(url: str, version: str) -> str:
     """Download, verify and install the Databricks CLI binary; return its path.
 
     The archive's SHA-256 must match the release's SHA256SUMS before the ZIP is
     opened. The checksum comes from the same release origin as the archive, so
     it proves consistency with that release, not independent publisher
-    authenticity. Installation writes a temporary file and renames it into
-    place, so concurrent callers never observe a partial executable.
+    authenticity.
+
+    Each install lives in ``<root>/<version>/<archive>/<binary sha256>/`` with
+    its marker, built in a staging directory and renamed into place whole. A
+    ``current`` pointer per archive is then replaced atomically. Concurrent or
+    interrupted installs therefore never pair one install's marker with
+    another's binary, and a returned path is never rewritten afterwards.
     """
     _validate_cli_version(version)
     archive_name, checksum_url, binary_name = _release_assets(url, version)
-    save_directory = os.path.join(CLI_CACHE_ROOT, version)
-    binary_path = os.path.abspath(os.path.join(save_directory, binary_name))
-    marker_path = os.path.join(save_directory, CLI_CACHE_MARKER)
+    archive_directory = _archive_cache_directory(version, archive_name)
     unverified = version == "snapshot"
     allow_unverified = unverified and _allow_unverified_snapshot()
     if unverified and not allow_unverified:
@@ -616,11 +905,16 @@ def download_and_unzip_databricks_cli(url: str, version: str) -> str:
             f"{BrickflowEnvVars.BRICKFLOW_BUNDLE_NO_DOWNLOAD.value}."
         )
 
-    if _cached_cli_is_valid(binary_path, marker_path, archive_name, allow_unverified):
+    current = _read_pointer(archive_directory)
+    if current is not None and _install_is_valid(
+        current, binary_name, archive_name, allow_unverified
+    ):
         _ilog.info("Databricks cli already exists. Skipping download.")
-        return binary_path
-    if os.path.lexists(binary_path):
-        _ilog.info("Cached Databricks cli failed verification; reinstalling.")
+        return os.path.abspath(os.path.join(current, binary_name))
+    if current is not None or os.path.lexists(
+        os.path.join(CLI_CACHE_ROOT, version, binary_name)
+    ):
+        _ilog.info("No verified Databricks cli in the cache; installing.")
 
     expected_sha256: Optional[str] = None
     if not unverified:
@@ -628,63 +922,42 @@ def download_and_unzip_databricks_cli(url: str, version: str) -> str:
     else:
         _ilog.warning("Installing the unverified Databricks CLI snapshot from %s.", url)
 
-    os.makedirs(save_directory, exist_ok=True)
-    archive_fd, archive_path = tempfile.mkstemp(
-        prefix=".download-", suffix=".zip", dir=save_directory
-    )
-    binary_fd, binary_temp = tempfile.mkstemp(
-        prefix=".databricks-", suffix=".tmp", dir=save_directory
-    )
-    os.close(binary_fd)
+    os.makedirs(archive_directory, exist_ok=True)
+    cleanup_files: list[str] = []
+    cleanup_trees: list[str] = []
     try:
-        archive_digest = hashlib.sha256()
+        archive_fd, archive_path = tempfile.mkstemp(
+            prefix=".download-", suffix=".zip", dir=archive_directory
+        )
+        os.close(archive_fd)
+        cleanup_files.append(archive_path)
+        staging = tempfile.mkdtemp(prefix=".staging-", dir=archive_directory)
+        cleanup_trees.append(staging)
 
-        with os.fdopen(archive_fd, "wb") as archive_file:
-
-            def _sink(chunk: bytes) -> None:
-                archive_digest.update(chunk)
-                archive_file.write(chunk)
-
-            _stream_download(url, MAX_ARCHIVE_BYTES, _sink)
-        actual_sha256 = archive_digest.hexdigest()
-        if expected_sha256 is not None and not hmac.compare_digest(
-            actual_sha256, expected_sha256
-        ):
-            raise CliIntegrityError(
-                f"Checksum mismatch for {archive_name}: expected {expected_sha256}, "
-                f"got {actual_sha256}."
-            )
-
-        try:
-            with zipfile.ZipFile(archive_path, "r") as archive:
-                member = _select_cli_member(archive, binary_name)
-                binary_sha256 = _extract_member(archive, member, binary_temp)
-        except zipfile.BadZipFile as e:
-            raise CliIntegrityError(f"Invalid Databricks CLI archive: {e}") from e
-        os.chmod(binary_temp, 0o755)
-
-        _write_marker(
-            save_directory,
-            marker_path,
+        archive_sha256 = _download_verified_archive(
+            url, archive_path, expected_sha256, archive_name
+        )
+        binary_sha256 = _stage_install(
+            archive_path,
+            staging,
+            binary_name,
             {
                 "archive": archive_name,
-                "archive_sha256": actual_sha256,
-                "binary_sha256": binary_sha256,
+                "archive_sha256": archive_sha256,
                 "verified": expected_sha256 is not None,
             },
         )
-        try:
-            os.replace(binary_temp, binary_path)
-        except PermissionError:
-            # Windows cannot replace a running executable; another process
-            # may have installed the same verified binary in the meantime.
-            if not _cached_cli_is_valid(
-                binary_path, marker_path, archive_name, allow_unverified
-            ):
-                raise
+        install_directory = os.path.join(archive_directory, binary_sha256)
+        _publish_install(
+            staging, install_directory, binary_name, archive_name, allow_unverified
+        )
+        _write_pointer(archive_directory, binary_sha256)
+        binary_path = os.path.abspath(os.path.join(install_directory, binary_name))
     finally:
-        _remove_quietly(archive_path)
-        _remove_quietly(binary_temp)
+        for path in cleanup_files:
+            _remove_quietly(path)
+        for path in cleanup_trees:
+            _remove_tree_quietly(path)
 
     _ilog.info("Databricks cli %s verified and installed at %s.", version, binary_path)
     return binary_path

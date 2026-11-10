@@ -4,20 +4,23 @@ Every archive here is synthetic and served from a loopback HTTP server. No
 downloaded file is ever executed.
 """
 
+import gzip
 import hashlib
 import io
 import json
 import os
 import stat
+import struct
 import threading
 import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Dict, Iterator, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 from unittest.mock import patch
 
 import pytest
+import requests
 
-from brickflow import BrickflowEnvVars
+from brickflow import BrickflowEnvVars, BrickflowProjectDeploymentSettings
 from brickflow.cli import bundles
 from brickflow.cli.bundles import (
     CLI_CACHE_MARKER,
@@ -168,14 +171,34 @@ def cache_dir(version: str = VERSION) -> str:
     return os.path.join(".databricks", "bin", "cli", version)
 
 
+def archive_dir(version: str = VERSION, archive: str = ARCHIVE) -> str:
+    return os.path.join(cache_dir(version), archive[: -len(".zip")])
+
+
+def install_dir(
+    binary: bytes = BINARY, version: str = VERSION, archive: str = ARCHIVE
+) -> str:
+    return os.path.join(
+        archive_dir(version, archive), hashlib.sha256(binary).hexdigest()
+    )
+
+
+def cache_entries(version: str = VERSION, archive: str = ARCHIVE) -> List[str]:
+    return sorted(os.listdir(archive_dir(version, archive)))
+
+
 def install(_release: ReleaseServer, version: str = VERSION) -> str:
     return download_and_unzip_databricks_cli(bundle_download_path(version), version)
 
 
 def assert_no_install(version: str = VERSION) -> None:
-    directory = cache_dir(version)
-    leftovers = os.listdir(directory) if os.path.isdir(directory) else []
-    assert not leftovers, leftovers
+    leftovers = [
+        os.path.join(root, name)
+        for root, dirs, files in os.walk(cache_dir(version))
+        for name in files + dirs
+    ]
+    # Only empty per-archive directories may remain after a failed install.
+    assert all(os.path.isdir(p) and not os.listdir(p) for p in leftovers), leftovers
 
 
 class TestVerifiedInstall:
@@ -183,12 +206,18 @@ class TestVerifiedInstall:
         server.publish(release_zip())
         path = install(server)
 
-        assert path == os.path.abspath(os.path.join(cache_dir(), "databricks"))
+        assert path == os.path.abspath(os.path.join(install_dir(), "databricks"))
         with open(path, "rb") as handle:
             assert handle.read() == BINARY
         assert os.stat(path).st_mode & 0o777 == 0o755
-        assert sorted(os.listdir(cache_dir())) == [CLI_CACHE_MARKER, "databricks"]
-        with open(os.path.join(cache_dir(), CLI_CACHE_MARKER), encoding="utf-8") as fh:
+        digest = hashlib.sha256(BINARY).hexdigest()
+        assert cache_entries() == [digest, "current"]
+        assert sorted(os.listdir(install_dir())) == [CLI_CACHE_MARKER, "databricks"]
+        with open(os.path.join(archive_dir(), "current"), encoding="ascii") as fh:
+            assert fh.read().strip() == digest
+        with open(
+            os.path.join(install_dir(), CLI_CACHE_MARKER), encoding="utf-8"
+        ) as fh:
             marker = json.load(fh)
         assert marker["verified"] is True
         assert marker["binary_sha256"] == hashlib.sha256(BINARY).hexdigest()
@@ -217,15 +246,16 @@ class TestVerifiedInstall:
         with open(path, "rb") as handle:
             assert handle.read() == BINARY
 
-    def test_legacy_cache_without_marker_is_replaced(self, server):
+    def test_legacy_cache_is_not_trusted(self, server):
         os.makedirs(cache_dir())
         legacy = os.path.join(cache_dir(), "databricks")
         with open(legacy, "wb") as handle:
             handle.write(b"unverified legacy binary")
         server.publish(release_zip())
 
-        install(server)
-        with open(legacy, "rb") as handle:
+        path = install(server)
+        assert path != os.path.abspath(legacy)
+        with open(path, "rb") as handle:
             assert handle.read() == BINARY
 
     def test_symlinked_cache_entry_is_not_trusted(self, server, tmp_path):
@@ -290,19 +320,20 @@ class TestVerifiedInstall:
         assert len(set(results)) == 1
         with open(results[0], "rb") as handle:
             assert handle.read() == BINARY
-        assert sorted(os.listdir(cache_dir())) == [CLI_CACHE_MARKER, "databricks"]
+        assert cache_entries() == [hashlib.sha256(BINARY).hexdigest(), "current"]
+        assert sorted(os.listdir(install_dir())) == [CLI_CACHE_MARKER, "databricks"]
 
     def test_failed_reinstall_keeps_previous_binary(self, server):
         server.publish(release_zip())
         path = install(server)
-        os.remove(os.path.join(cache_dir(), CLI_CACHE_MARKER))
+        os.remove(os.path.join(archive_dir(), "current"))
         server.routes[server.path(ARCHIVE)] = Route(b"tampered")
 
         with pytest.raises(CliIntegrityError):
             install(server)
         with open(path, "rb") as handle:
             assert handle.read() == BINARY
-        assert sorted(os.listdir(cache_dir())) == ["databricks"]
+        assert cache_entries() == [hashlib.sha256(BINARY).hexdigest()]
 
 
 class TestRejectedDownloads:
@@ -421,7 +452,8 @@ class TestRejectedDownloads:
         assert server.requests == []
 
     @pytest.mark.parametrize(
-        "version", ["../../escape", "0.236.1/../x", "", "v0.236.1"]
+        "version",
+        ["../../escape", "0.236.1/../x", "", "v0.236.1", "0.236.1\n", "0.236.1\r"],
     )
     def test_invalid_version(self, server, version):
         with pytest.raises(CliIntegrityError, match="Invalid Databricks CLI version"):
@@ -613,7 +645,7 @@ class TestPolicyAndCompatibility:
 
         path = install(server, "snapshot")
         with open(
-            os.path.join(cache_dir("snapshot"), CLI_CACHE_MARKER), encoding="utf-8"
+            os.path.join(os.path.dirname(path), CLI_CACHE_MARKER), encoding="utf-8"
         ) as fh:
             assert json.load(fh)["verified"] is False
         assert [p for p, _ in server.requests] == [server.path(name, "snapshot")]
@@ -644,7 +676,7 @@ class TestPolicyAndCompatibility:
         with patch.dict(os.environ, {}):
             bundle_cli_setup()
             exported = os.environ[BrickflowEnvVars.BRICKFLOW_BUNDLE_CLI_EXEC.value]
-        assert exported == os.path.abspath(os.path.join(cache_dir(), "databricks"))
+        assert exported == os.path.abspath(os.path.join(install_dir(), "databricks"))
 
     def test_setup_no_download_override_skips_network(self, server, monkeypatch):
         monkeypatch.setenv(BrickflowEnvVars.BRICKFLOW_BUNDLE_NO_DOWNLOAD.value, "true")
@@ -665,3 +697,557 @@ class TestPolicyAndCompatibility:
         with pytest.raises(ClickException):
             bundle_cli_setup()
         assert_no_install()
+
+
+# ---------------------------------------------------------------------------
+# Redirect bodies are never read, decoded or buffered by Requests.
+# ---------------------------------------------------------------------------
+
+
+class RedirectBodyServer:
+    """Loopback server whose redirect responses carry large or compressed bodies.
+
+    It records how many body bytes the socket accepted, so a client that
+    closes a redirect without reading it shows up as a short write.
+    """
+
+    def __init__(self, location: str, body_size: int, gzip_body: bytes = b""):
+        self.location = location
+        self.body_size = body_size
+        self.gzip_body = gzip_body
+        self.written = 0
+        self.done = threading.Event()
+        outer = self
+
+        class Handler(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def do_GET(self) -> None:  # noqa: N802
+                self.send_response(302)
+                self.send_header("Location", outer.location)
+                if self.path == "/gzip":
+                    self.send_header("Content-Encoding", "gzip")
+                    self.send_header("Content-Length", str(len(outer.gzip_body)))
+                    self.end_headers()
+                    self.wfile.write(outer.gzip_body)
+                    self.wfile.flush()
+                    outer.done.set()
+                    return
+                self.send_header("Content-Length", str(outer.body_size))
+                self.end_headers()
+                chunk = b"\0" * 65536
+                try:
+                    while outer.written < outer.body_size:
+                        self.wfile.write(chunk)
+                        self.wfile.flush()
+                        outer.written += len(chunk)
+                except OSError:
+                    pass
+                finally:
+                    outer.done.set()
+
+            def log_message(self, *_: object) -> None:
+                pass
+
+        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.base = f"http://127.0.0.1:{self.httpd.server_address[1]}"
+        self.thread = threading.Thread(
+            target=self.httpd.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True
+        )
+        self.thread.start()
+
+    def close(self) -> None:
+        self.httpd.shutdown()
+        self.httpd.server_close()
+
+
+@pytest.fixture(name="body_traps")
+def body_traps_fixture(monkeypatch) -> Dict[str, List[Any]]:
+    """Record every Response.content access and every netrc lookup."""
+    traps: Dict[str, List[Any]] = {"content": [], "netrc": []}
+    original = requests.models.Response.content
+
+    def content(self: requests.Response) -> Any:
+        traps["content"].append(self.status_code)
+        return original.fget(self)  # type: ignore[attr-defined]
+
+    def netrc_lookup(url: str, raise_errors: bool = False) -> None:
+        del raise_errors
+        traps["netrc"].append(url)
+
+    monkeypatch.setattr(requests.models.Response, "content", property(content))
+    monkeypatch.setattr(requests.sessions, "get_netrc_auth", netrc_lookup)
+    return traps
+
+
+class TestRedirectBodies:
+    BODY = 32 * 1024 * 1024  # far beyond any loopback socket buffering
+
+    def test_large_identity_redirect_body_is_not_read(self, server, body_traps):
+        archive = release_zip()
+        server.publish(archive)
+        redirector = RedirectBodyServer(server.url(ARCHIVE), self.BODY)
+        try:
+            url = f"{redirector.base}/{ARCHIVE}"
+            buffer = bytearray()
+            bundles._stream_download(url, len(archive), buffer.extend)
+            assert redirector.done.wait(10)
+        finally:
+            redirector.close()
+        assert bytes(buffer) == archive
+        assert redirector.written < self.BODY
+        assert body_traps["content"] == []
+        assert body_traps["netrc"] == []
+
+    def test_compressed_redirect_body_is_not_decoded(self, server, body_traps):
+        archive = release_zip()
+        server.publish(archive)
+        bomb = gzip.compress(b"\0" * (4 * 1024 * 1024))
+        assert len(bomb) < 8192
+        redirector = RedirectBodyServer(server.url(ARCHIVE), 0, gzip_body=bomb)
+        try:
+            buffer = bytearray()
+            bundles._stream_download(
+                f"{redirector.base}/gzip", len(archive), buffer.extend
+            )
+            assert redirector.done.wait(10)
+        finally:
+            redirector.close()
+        assert bytes(buffer) == archive
+        assert body_traps["content"] == []
+        assert body_traps["netrc"] == []
+
+    def test_full_install_through_redirects_reads_no_redirect_body(
+        self, server, body_traps
+    ):
+        archive = release_zip()
+        server.publish(archive)
+        server.routes["/assets/blob"] = Route(archive)
+        server.routes[server.path(ARCHIVE)] = Route(
+            body=b"x" * 4096, status=302, headers={"Location": "/assets/blob"}
+        )
+        assert os.path.exists(install(server))
+        assert body_traps["content"] == []
+        assert body_traps["netrc"] == []
+
+    def test_plain_session_control_reads_redirect_body(self, server, body_traps):
+        """Control: shows the traps detect Requests' hidden redirect handling."""
+        server.routes["/target"] = Route(b"ok")
+        server.routes["/hop"] = Route(
+            body=b"y" * 1024, status=302, headers={"Location": "/target"}
+        )
+        url = server.base.replace("/releases", "") + "/hop"
+        with requests.Session() as session:
+            session.get(url, stream=True, allow_redirects=False).close()
+        assert 302 in body_traps["content"]
+        assert body_traps["netrc"]
+
+
+# ---------------------------------------------------------------------------
+# Marker and binary are published as one unit; returned paths never change.
+# ---------------------------------------------------------------------------
+
+AMD64 = f"databricks_cli_{VERSION}_linux_amd64.zip"
+ARM64 = f"databricks_cli_{VERSION}_linux_arm64.zip"
+AMD64_BINARY = BINARY + b"amd64\n"
+ARM64_BINARY = BINARY + b"arm64\n"
+
+
+def read_bytes(path: str) -> bytes:
+    with open(path, "rb") as handle:
+        return handle.read()
+
+
+def read_marker(binary_path: str) -> Dict[str, Any]:
+    with open(
+        os.path.join(os.path.dirname(binary_path), CLI_CACHE_MARKER), encoding="utf-8"
+    ) as handle:
+        return json.load(handle)
+
+
+def run_ordered(
+    monkeypatch, calls: List[Callable[[], str]], order: List[int]
+) -> Tuple[List[Optional[str]], List[BaseException]]:
+    """Run installers in threads; publish their install directories in ``order``.
+
+    Every installer stages fully before any publishes (barrier), so the
+    publication and pointer writes interleave deterministically.
+    """
+    barrier = threading.Barrier(len(calls), timeout=10)
+    turns = [threading.Event() for _ in calls]
+    index = threading.local()
+    publish = bundles._publish_install
+    write_pointer = bundles._write_pointer
+
+    def ordered_publish(*args: Any, **kwargs: Any) -> None:
+        barrier.wait()
+        assert turns[index.value].wait(10)
+        publish(*args, **kwargs)
+
+    def ordered_pointer(*args: Any, **kwargs: Any) -> None:
+        write_pointer(*args, **kwargs)
+        position = order.index(index.value)
+        if position + 1 < len(order):
+            turns[order[position + 1]].set()
+
+    monkeypatch.setattr(bundles, "_publish_install", ordered_publish)
+    monkeypatch.setattr(bundles, "_write_pointer", ordered_pointer)
+    results: List[Optional[str]] = [None] * len(calls)
+    errors: List[BaseException] = []
+
+    def worker(i: int) -> None:
+        index.value = i
+        try:
+            results[i] = calls[i]()
+        except BaseException as e:  # pylint: disable=broad-except
+            errors.append(e)
+            for turn in turns:
+                turn.set()
+
+    threads = [threading.Thread(target=worker, args=(i,)) for i in range(len(calls))]
+    for thread in threads:
+        thread.start()
+    turns[order[0]].set()
+    for thread in threads:
+        thread.join(30)
+    monkeypatch.setattr(bundles, "_publish_install", publish)
+    monkeypatch.setattr(bundles, "_write_pointer", write_pointer)
+    return results, errors
+
+
+class TestCachePublication:
+    def test_concurrent_cross_platform_installs_stay_paired(self, server, monkeypatch):
+        amd64 = release_zip(binary=AMD64_BINARY)
+        arm64 = release_zip(binary=ARM64_BINARY)
+        server.routes[server.path(AMD64)] = Route(amd64)
+        server.routes[server.path(ARM64)] = Route(arm64)
+        server.routes[server.path(SUMS)] = Route(
+            sums_for(AMD64, amd64) + sums_for(ARM64, arm64)
+        )
+        calls = [
+            lambda: download_and_unzip_databricks_cli(server.url(AMD64), VERSION),
+            lambda: download_and_unzip_databricks_cli(server.url(ARM64), VERSION),
+        ]
+        # The reviewed failure schedule: arm64 publishes first, amd64 last.
+        results, errors = run_ordered(monkeypatch, calls, [1, 0])
+
+        assert not errors
+        amd64_path, arm64_path = results
+        assert amd64_path != arm64_path
+        assert read_bytes(amd64_path) == AMD64_BINARY
+        assert read_bytes(arm64_path) == ARM64_BINARY
+        assert read_marker(amd64_path)["archive"] == AMD64
+        assert read_marker(arm64_path)["archive"] == ARM64
+
+        server.requests.clear()
+        assert calls[0]() == amd64_path
+        assert calls[1]() == arm64_path
+        assert server.requests == []
+
+    def test_concurrent_installs_of_changed_release_bytes(self, server, monkeypatch):
+        # A mutable release serves different bytes under one archive name.
+        other = ReleaseServer()
+        try:
+            first, second = release_zip(binary=AMD64_BINARY), release_zip(
+                binary=ARM64_BINARY
+            )
+            server.publish(first)
+            other.publish(second)
+            calls = [
+                lambda: download_and_unzip_databricks_cli(server.url(ARCHIVE), VERSION),
+                lambda: download_and_unzip_databricks_cli(other.url(ARCHIVE), VERSION),
+            ]
+            results, errors = run_ordered(monkeypatch, calls, [1, 0])
+        finally:
+            other.close()
+
+        assert not errors
+        first_path, second_path = results
+        # Each caller keeps the bytes it verified; nothing was rewritten.
+        assert read_bytes(first_path) == AMD64_BINARY
+        assert read_bytes(second_path) == ARM64_BINARY
+        for path, binary in ((first_path, AMD64_BINARY), (second_path, ARM64_BINARY)):
+            marker = read_marker(path)
+            assert marker["binary_sha256"] == hashlib.sha256(binary).hexdigest()
+        # The pointer names the last publication, and that pair is coherent.
+        server.requests.clear()
+        assert install(server) == first_path
+
+    def test_pointer_failure_keeps_previous_pair(self, server, monkeypatch):
+        server.publish(release_zip())
+        previous = install(server)
+        with open(os.path.join(archive_dir(), "current"), encoding="ascii") as fh:
+            pointer = fh.read()
+
+        # Force one reinstall of changed release bytes, failing at the pointer.
+        server.publish(release_zip(binary=ARM64_BINARY))
+        real_read = bundles._read_pointer
+        monkeypatch.setattr(bundles, "_read_pointer", lambda _directory: None)
+
+        def broken_pointer(*_: Any) -> None:
+            raise OSError("injected pointer failure")
+
+        monkeypatch.setattr(bundles, "_write_pointer", broken_pointer)
+        with pytest.raises(OSError, match="injected"):
+            install(server)
+        monkeypatch.setattr(bundles, "_read_pointer", real_read)
+
+        with open(os.path.join(archive_dir(), "current"), encoding="ascii") as fh:
+            assert fh.read() == pointer
+        assert read_bytes(previous) == BINARY
+        assert read_marker(previous)["binary_sha256"] == pointer.strip()
+        # The orphaned new install is complete and self-consistent.
+        orphan = os.path.join(install_dir(ARM64_BINARY), "databricks")
+        assert read_bytes(orphan) == ARM64_BINARY
+        assert not [n for n in cache_entries() if n.startswith(".")]
+        server.requests.clear()
+        assert install(server) == previous
+        assert server.requests == []
+
+    def test_publish_failure_keeps_previous_pair(self, server, monkeypatch):
+        server.publish(release_zip())
+        previous = install(server)
+        server.publish(release_zip(binary=ARM64_BINARY))
+        monkeypatch.setattr(bundles, "_read_pointer", lambda _directory: None)
+
+        def broken_publish(*_: Any) -> None:
+            raise OSError("injected rename failure")
+
+        monkeypatch.setattr(bundles, "_publish_install", broken_publish)
+        with pytest.raises(OSError, match="injected"):
+            install(server)
+        assert read_bytes(previous) == BINARY
+        assert cache_entries() == [hashlib.sha256(BINARY).hexdigest(), "current"]
+
+    def test_orphaned_install_is_adopted(self, server, monkeypatch):
+        server.publish(release_zip())
+
+        def broken_pointer(*_: Any) -> None:
+            raise OSError("injected pointer failure")
+
+        real_pointer = bundles._write_pointer
+        monkeypatch.setattr(bundles, "_write_pointer", broken_pointer)
+        with pytest.raises(OSError):
+            install(server)
+        monkeypatch.setattr(bundles, "_write_pointer", real_pointer)
+
+        path = install(server)
+        assert path == os.path.abspath(os.path.join(install_dir(), "databricks"))
+        assert cache_entries() == [hashlib.sha256(BINARY).hexdigest(), "current"]
+
+    def test_invalid_occupant_is_replaced(self, server):
+        server.publish(release_zip())
+        path = install(server)
+        with open(path, "wb") as handle:
+            handle.write(b"tampered")
+
+        assert install(server) == path
+        assert read_bytes(path) == BINARY
+        assert cache_entries() == [hashlib.sha256(BINARY).hexdigest(), "current"]
+
+    def test_staging_allocation_failure_leaves_nothing(self, server, monkeypatch):
+        server.publish(release_zip())
+
+        def failing_mkdtemp(*_: Any, **__: Any) -> str:
+            raise OSError("injected mkdtemp failure")
+
+        monkeypatch.setattr(bundles.tempfile, "mkdtemp", failing_mkdtemp)
+        with pytest.raises(OSError, match="injected"):
+            install(server)
+        assert_no_install()
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+    def test_cached_binary_execute_bits_are_restored(self, server):
+        server.publish(release_zip())
+        path = install(server)
+        os.chmod(path, 0o600)
+        server.requests.clear()
+
+        assert install(server) == path
+        assert os.stat(path).st_mode & 0o777 == 0o755
+        assert server.requests == []
+
+
+# ---------------------------------------------------------------------------
+# ZIP metadata is bounded before zipfile allocates per-entry objects.
+# ---------------------------------------------------------------------------
+
+
+def many_entry_zip(count: int) -> bytes:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_STORED) as archive:
+        for i in range(count):
+            archive.writestr(f"f{i}", b"")
+        info = zipfile.ZipInfo("databricks")
+        info.external_attr = EXEC_MODE << 16
+        archive.writestr(info, BINARY)
+    return buffer.getvalue()
+
+
+def patch_eocd(data: bytes, **fields: int) -> bytes:
+    eocd = data.rindex(b"PK\x05\x06")
+    names = [
+        "sig",
+        "disk",
+        "cd_disk",
+        "disk_entries",
+        "total_entries",
+        "cd_size",
+        "cd_offset",
+        "comment",
+    ]
+    values = dict(zip(names, struct.unpack_from("<4s4H2LH", data, eocd)))
+    values.update(fields)
+    record = struct.pack("<4s4H2LH", *(values[n] for n in names))
+    return data[:eocd] + record + data[eocd + 22 :]
+
+
+@pytest.fixture(name="zip_allocations")
+def zip_allocations_fixture(monkeypatch) -> List[str]:
+    """Count ZipInfo objects built while parsing an archive."""
+    created: List[str] = []
+    original = zipfile.ZipInfo.__init__
+
+    def counting_init(self: zipfile.ZipInfo, *args: Any, **kwargs: Any) -> None:
+        created.append("ZipInfo")
+        original(self, *args, **kwargs)
+
+    monkeypatch.setattr(zipfile.ZipInfo, "__init__", counting_init)
+    return created
+
+
+class TestZipMetadataPreflight:
+    def test_huge_entry_count_rejected_before_zipinfo_allocation(
+        self, server, zip_allocations
+    ):
+        archive = many_entry_zip(5000)
+        zip_allocations.clear()
+        server.publish(archive)
+        with pytest.raises(CliIntegrityError, match="declares 5001 members"):
+            install(server)
+        assert zip_allocations == []
+        assert_no_install()
+
+    @pytest.mark.parametrize("declared", [4, 0, 1])
+    def test_forged_low_entry_count_rejected(self, server, zip_allocations, declared):
+        archive = patch_eocd(
+            many_entry_zip(200), disk_entries=declared, total_entries=declared
+        )
+        zip_allocations.clear()
+        server.publish(archive)
+        with pytest.raises(CliIntegrityError, match="members"):
+            install(server)
+        assert zip_allocations == []
+
+    def test_forged_high_entry_count_rejected(self, server):
+        server.publish(patch_eocd(release_zip(), disk_entries=5, total_entries=5))
+        with pytest.raises(CliIntegrityError, match="declares 5 members"):
+            install(server)
+
+    def test_oversized_central_directory_rejected(self, server, zip_allocations):
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w") as archive:
+            for i in range(5):
+                info = zipfile.ZipInfo(f"pad{i}")
+                info.comment = b"c" * 60000
+                archive.writestr(info, b"")
+            info = zipfile.ZipInfo("databricks")
+            info.external_attr = EXEC_MODE << 16
+            archive.writestr(info, BINARY)
+        zip_allocations.clear()
+        server.publish(buffer.getvalue())
+        with pytest.raises(CliIntegrityError, match="central directory is"):
+            install(server)
+        assert zip_allocations == []
+
+    def test_zip64_sentinel_rejected(self, server):
+        server.publish(patch_eocd(release_zip(), total_entries=0xFFFF))
+        with pytest.raises(CliIntegrityError, match="ZIP64"):
+            install(server)
+
+    def test_zip64_locator_rejected(self, server):
+        data = release_zip()
+        eocd = data.rindex(b"PK\x05\x06")
+        locator = b"PK\x06\x07" + b"\0" * 16
+        server.publish(data[:eocd] + locator + data[eocd:])
+        with pytest.raises(CliIntegrityError, match="ZIP64"):
+            install(server)
+
+    def test_multi_disk_rejected(self, server):
+        server.publish(patch_eocd(release_zip(), disk=1))
+        with pytest.raises(CliIntegrityError, match="Multi-disk"):
+            install(server)
+
+    def test_prepended_data_rejected(self, server):
+        # zipfile itself accepts this by shifting every offset.
+        data = b"#!/bin/sh\n" * 10 + release_zip()
+        assert zipfile.is_zipfile(io.BytesIO(data))
+        server.publish(data)
+        with pytest.raises(CliIntegrityError, match="offset mismatch"):
+            install(server)
+
+    def test_trailing_data_rejected(self, server):
+        server.publish(release_zip() + b"trailing")
+        with pytest.raises(CliIntegrityError, match="end record"):
+            install(server)
+
+    def test_not_a_zip_rejected(self, server):
+        server.publish(b"not a zip archive at all, but long enough to scan")
+        with pytest.raises(CliIntegrityError, match="end of central directory"):
+            install(server)
+
+    def test_embedded_nul_name_rejected(self, server):
+        data = make_zip([("databricksXignored", BINARY, EXEC_MODE)])
+        data = data.replace(b"databricksXignored", b"databricks\0ignored")
+        server.publish(data)
+        with pytest.raises(CliIntegrityError, match="NUL"):
+            install(server)
+        assert_no_install()
+
+    def test_release_layout_passes_preflight(self, tmp_path):
+        path = tmp_path / "release.zip"
+        path.write_bytes(release_zip())
+        bundles._preflight_zip_central_directory(str(path))
+
+
+# ---------------------------------------------------------------------------
+# Snapshot opt-in is part of the public settings API and is off by default.
+# ---------------------------------------------------------------------------
+
+
+class TestSnapshotSetting:
+    def test_setting_is_registered(self):
+        member = BrickflowEnvVars.BRICKFLOW_BUNDLE_CLI_ALLOW_UNVERIFIED_SNAPSHOT
+        assert member.value == bundles.BRICKFLOW_BUNDLE_CLI_ALLOW_UNVERIFIED_SNAPSHOT
+
+    def test_default_rejects_snapshot(self, server):
+        settings = BrickflowProjectDeploymentSettings()
+        assert settings.brickflow_bundle_cli_allow_unverified_snapshot is None
+        with pytest.raises(CliIntegrityError, match="publishes no checksums"):
+            install(server, "snapshot")
+        assert server.requests == []
+
+    @pytest.mark.parametrize("value", [False, "false", "0"])
+    def test_explicit_false_rejects_snapshot(self, server, value):
+        settings = BrickflowProjectDeploymentSettings()
+        try:
+            settings.brickflow_bundle_cli_allow_unverified_snapshot = value
+            with pytest.raises(CliIntegrityError, match="publishes no checksums"):
+                install(server, "snapshot")
+        finally:
+            settings.brickflow_bundle_cli_allow_unverified_snapshot = None
+        assert server.requests == []
+
+    def test_settings_api_opt_in(self, server):
+        name = "databricks_cli_linux_amd64.zip"
+        server.routes[server.path(name, "snapshot")] = Route(release_zip())
+        settings = BrickflowProjectDeploymentSettings()
+        try:
+            settings.brickflow_bundle_cli_allow_unverified_snapshot = True
+            assert settings.brickflow_bundle_cli_allow_unverified_snapshot is True
+            path = install(server, "snapshot")
+        finally:
+            settings.brickflow_bundle_cli_allow_unverified_snapshot = None
+        assert read_marker(path)["verified"] is False
+        with pytest.raises(CliIntegrityError):
+            install(server, "snapshot")

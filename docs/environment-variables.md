@@ -22,8 +22,15 @@ hide:
 | BRICKFLOW_BUNDLE_CLI_EXEC              | databricks                                     | The executable command for bundle execution. By default it will be downloaded on the fly.                        |
 | BRICKFLOW_BUNDLE_NO_DOWNLOAD           | False                                          | Flag indicating whether to skip downloading the databricks bundle cli. Useful if you are in locked down network. |
 | BRICKFLOW_BUNDLE_CLI_VERSION           | 0.236.1                                        | The version of the bundle CLI tool                                                                               |
+| BRICKFLOW_BUNDLE_CLI_ALLOW_UNVERIFIED_SNAPSHOT | False                                  | Only affects `BRICKFLOW_BUNDLE_CLI_VERSION=snapshot`. The snapshot release publishes no checksums, so it is refused unless this is true. When true, the snapshot CLI is installed without checksum verification (size and layout limits still apply). Leave it unset for released versions. See [CLI bootstrap integrity](cli-bootstrap-integrity.md). |
 | BRICKFLOW_MONOREPO_PATH_TO_BUNDLE_ROOT | N/A                                            | The path to the bundle root directory in a monorepo. Default assumes you are not using a monorepo                |
 | BRICKFLOW_PROJECT_PARAMS               | N/A                                            | Runtime/Deployment time parameters seperated by "," (e.g. k1=v1,k2=v2) to pass to workflow tasks                 |
+
+The bundle CLI download is verified against the release's published checksums
+before it is installed. See [Databricks CLI bootstrap integrity](cli-bootstrap-integrity.md)
+for what is checked, the download limits and the cache layout. The snapshot
+opt-in can also be set from Python through
+`BrickflowProjectDeploymentSettings().brickflow_bundle_cli_allow_unverified_snapshot = True`.
 
 # Runtime project parameters
 
