@@ -189,7 +189,8 @@ class TableauSignInError(Exception):
     ``FailedSignInError``, ``ServerResponseError`` or ``NonXMLResponseError``)
     so server-supplied text can be redacted. The message keeps the original
     exception type name and text with every occurrence of the configured
-    password replaced by ``***``. The original exception is not chained.
+    password replaced by ``***``. The original exception is neither chained
+    nor kept as implicit context.
     Transport errors (``OSError`` and its ``requests`` subclasses such as
     ``requests.exceptions.SSLError`` and
     :class:`~brickflow_plugins._origin_policy.CrossOriginRequestError`) are
@@ -329,9 +330,9 @@ class TableauWrapper:
         except Exception as exc:  # pylint: disable=broad-except
             original_type = type(exc).__name__
             message = _redact_secrets(f"{original_type}: {exc}", [self.password])
-            raise TableauSignInError(
-                f"Tableau sign-in failed: {message}", original_type
-            ) from None
+        # Raised outside the handler so the unredacted exception is neither the
+        # cause nor the implicit context of the error callers see.
+        raise TableauSignInError(f"Tableau sign-in failed: {message}", original_type)
 
     def _get_job_status(self, job_id: str) -> dict:
         """

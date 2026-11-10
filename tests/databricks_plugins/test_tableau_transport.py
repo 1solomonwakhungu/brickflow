@@ -481,8 +481,10 @@ class TestTableauTransport:
         assert TABLEAU_SENTINEL not in text
         assert repr(TABLEAU_SENTINEL)[1:-1] not in text
         assert "***" in str(excinfo.value)
+        # The unredacted client exception must not be reachable from the raised
+        # error, including through implicit context that tools may walk.
         assert excinfo.value.__cause__ is None
-        assert excinfo.value.__suppress_context__ is True
+        assert excinfo.value.__context__ is None
         assert excinfo.value.original_type in {
             "FailedSignInError",
             "ServerResponseError",
