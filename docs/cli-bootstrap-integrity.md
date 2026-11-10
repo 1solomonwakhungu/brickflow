@@ -47,11 +47,14 @@ total deadline, so a slow server can prolong the bootstrap.
 
 Before Python's `zipfile` parses the archive, Brickflow reads its end-of-central-
 directory record and walks the central directory itself. The archive must be a
-single-disk, non-ZIP64 file with no data before the first entry or after the end
-record, a central directory of at most 256 KiB, and a declared entry count equal
+single-disk, non-ZIP64 file with no data after the end record. The central
+directory must immediately precede that record, occupy at most 256 KiB, and
+have a declared entry count equal
 to the number of records actually present, at most 64. Stored names may not
 contain NUL bytes. This keeps the metadata `zipfile` allocates proportional to the
-member limit, whatever count the archive claims.
+member limit, whatever count the archive claims. A prefix before the first local
+header is permitted when the recorded offsets are consistent; those bytes are
+included in the verified archive checksum.
 
 The archive must contain exactly one CLI binary: `databricks` on Linux and
 macOS, `databricks.exe` on Windows. A second binary in any directory, a binary
