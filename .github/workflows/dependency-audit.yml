@@ -32,7 +32,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     container:
-      image: python:3.12
+      image: python:3.12@sha256:cad37dd20c7cac861af9003af8796d03ea7a998ec1e3a664429740fc9d7d2691
       options: --user 1001
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -68,12 +68,21 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     container:
-      image: python:${{ matrix.python-version }}
+      image: ${{ matrix.image }}
       options: --user 1001
     strategy:
       fail-fast: false
       matrix:
         python-version: [ '3.9', '3.10', '3.11', '3.12' ]
+        include:
+          - python-version: '3.9'
+            image: python:3.9@sha256:da5aee29682d12a6649f51c8d6f15b87deb3e6c524b923c41d0cb3304d07c913
+          - python-version: '3.10'
+            image: python:3.10@sha256:c10791e6f69086d5216f7b5d3b839929c454e24305867ed9bc5152f0355b5423
+          - python-version: '3.11'
+            image: python:3.11@sha256:731670a425deabbc48d39f0ee3115cfa665b2a4002c19939ad3e88b2832b4549
+          - python-version: '3.12'
+            image: python:3.12@sha256:cad37dd20c7cac861af9003af8796d03ea7a998ec1e3a664429740fc9d7d2691
     env:
       PIP_DISABLE_PIP_VERSION_CHECK: "1"
       PYTHON_KEYRING_BACKEND: keyring.backends.null.Keyring
@@ -127,13 +136,3 @@ jobs:
             "$PY" -I tools/dependency_audit.py installed --require certifi \
               --python-executable /tmp/consumer/bin/python
           done
-
-      # The release job installs Twine with the container's pip, outside the
-      # Poetry environment. Check the CA bundle that process would use.
-      - name: Check publishing tool environment
-        run: |
-          PY="$(/tmp/poetry/bin/poetry env info --executable)"
-          python -m venv /tmp/publish
-          /tmp/publish/bin/python -m pip install --quiet wheel twine
-          "$PY" -I tools/dependency_audit.py installed --require certifi \
-            --python-executable /tmp/publish/bin/python

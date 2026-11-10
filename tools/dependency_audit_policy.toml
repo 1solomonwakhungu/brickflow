@@ -47,6 +47,7 @@ reason = "GHSA-cpwx-vrp4-4pq7."
 
 [[exception]]
 package = "urllib3"
+scopes = ["runtime", "extra:all-plugins", "extra:box", "extra:cerberus", "extra:snowflake", "extra:tableau"]
 versions = ["1.26.20"]
 python = ["3.10", "3.11", "3.12"]
 advisories = [
@@ -71,6 +72,7 @@ cluster library list in brickflow/engine/task.py updated in the same release.
 
 [[exception]]
 package = "urllib3"
+scopes = ["runtime", "extra:all-plugins", "extra:box", "extra:cerberus", "extra:snowflake", "extra:tableau"]
 versions = ["1.26.20"]
 python = ["3.9"]
 advisories = [
@@ -97,6 +99,7 @@ which fixes 2xpw, gm62, 38jv and pq67. Full remediation needs Python 3.10+.
 
 [[exception]]
 package = "requests"
+scopes = ["runtime", "extra:all-plugins", "extra:box", "extra:cerberus", "extra:snowflake", "extra:tableau"]
 versions = ["2.32.5"]
 python = ["3.9"]
 advisories = ["GHSA-gc5v-m9x4-r6x2"]

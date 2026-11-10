@@ -113,7 +113,8 @@ fix or a reviewed exception that says why it is open.
 Exit codes: `0` passed, `1` policy violation, `2` the audit could not complete.
 A network error, timeout, oversized or malformed response, paginated result
 or missing advisory record gives `2`, never `0`. Lookups have a per-request
-timeout, a total deadline, a response size cap, a request budget and at most
+timeout, a deadline enforced between requests and during response-body reads,
+a response size cap, a request budget and at most
 two retries for 408/429/5xx. Redirects are not followed, and plaintext
 endpoints are refused except on loopback (for tests).
 
@@ -161,3 +162,5 @@ exceptions that no longer match anything, so remove them when the fix lands.
 | snowflake-connector-python 3.13.2: GHSA-5cc2-282f-jjq2 (critical TLS hostname check), GHSA-qqj6-54q6-cxv6 | snowflake extra | `deferred-upgrade`, review by 2026-12-15. Fixed in 3.18.1 (Python 3.9) and 4.7.1+ (Python 3.10+, major upgrade) |
 | cryptography 43.0.3, pyOpenSSL 24.3.0, filelock 3.19.1 | snowflake extra | `deferred-upgrade`; move with the connector |
 | development and documentation tools | `dev`, `docs` groups | reported only |
+
+The client rejects results received after its deadline. DNS resolution and initial response headers remain subject to urllib and operating-system behavior; this is not a hard wall-clock cancellation guarantee. The workflow job timeout is a separate outer limit. The installed-version command checks floors, not live advisories for arbitrary consumer versions. The publisher action runs a separate environment whose effective CA bundle has not been verified by this workflow.

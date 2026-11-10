@@ -199,12 +199,19 @@ class DependencySpec:
     extras: Tuple[str, ...] = ()
     optional: bool = False
 
-    def applies(self, environment: Environment) -> bool:
+    def applies(
+        self, environment: Environment, parent_extras: Tuple[str, ...] = ()
+    ) -> bool:
         if not python_allows(self.python, environment.python):
             return False
         if self.markers:
             try:
-                return Marker(self.markers).evaluate(environment.markers())
+                return any(
+                    Marker(self.markers).evaluate(
+                        {**environment.markers(), "extra": extra}
+                    )
+                    for extra in ("",) + parent_extras
+                )
             except Exception as exc:  # packaging raises several marker error types
                 raise AuditError(
                     f"cannot evaluate marker {self.markers!r} for {self.name}: {exc}"
@@ -219,6 +226,10 @@ def _parse_dependency_specs(name: str, raw: Any) -> List[DependencySpec]:
         if isinstance(entry, str):
             specs.append(DependencySpec(canonicalize_name(name), entry))
         elif isinstance(entry, dict):
+            if "platform" in entry:
+                raise AuditError(
+                    f"unsupported platform selector for {name}; use markers"
+                )
             if "path" in entry or "git" in entry or "url" in entry:
                 specs.append(
                     DependencySpec(
@@ -380,10 +391,10 @@ def build_graph(
             environment = Environment(python, platform)
             for scope, specs in roots.items():
                 visited: Set[Tuple[str, str, Tuple[str, ...]]] = set()
-                stack = [spec for spec in specs]
+                stack = [(spec, ()) for spec in specs]
                 while stack:
-                    spec = stack.pop()
-                    if not spec.applies(environment):
+                    spec, parent_extras = stack.pop()
+                    if not spec.applies(environment, parent_extras):
                         continue
                     candidates = packages.get(spec.name)
                     if not candidates:
@@ -431,7 +442,7 @@ def build_graph(
                         for dep in dep_specs:
                             if dep.optional and dep.name not in enabled:
                                 continue
-                            stack.append(dep)
+                            stack.append((dep, spec.extras))
     for entry in list(ambiguities.values()) + list(missing.values()):
         entry["pythons"] = sorted(entry["pythons"], key=Version)
     return Graph(reach, list(ambiguities.values()), list(missing.values()))
@@ -528,7 +539,36 @@ class OsvClient:
                 with self._opener.open(
                     request, timeout=min(self.timeout, remaining)
                 ) as response:
-                    raw = response.read(self.max_response_bytes + 1)
+                    chunks = []
+                    received = 0
+                    while True:
+                        remaining = self._remaining()
+                        if remaining <= 0:
+                            raise AuditError("advisory response exceeded the deadline")
+                        # urllib's HTTPResponse exposes the socket through its
+                        # buffered reader. Fail closed if that implementation
+                        # changes rather than losing the remaining-time bound.
+                        reader = response.fp
+                        if reader is None:
+                            break
+                        sock = getattr(getattr(reader, "raw", None), "_sock", None)
+                        if sock is None or not hasattr(response, "read1"):
+                            raise AuditError(
+                                "cannot enforce advisory response deadline"
+                            )
+                        sock.settimeout(min(self.timeout, remaining))
+                        chunk = response.read1(
+                            min(65536, self.max_response_bytes + 1 - received)
+                        )
+                        if self._remaining() <= 0:
+                            raise AuditError("advisory response exceeded the deadline")
+                        if not chunk:
+                            break
+                        chunks.append(chunk)
+                        received += len(chunk)
+                        if received > self.max_response_bytes:
+                            raise AuditError("advisory response exceeds the byte limit")
+                    raw = b"".join(chunks)
                 if len(raw) > self.max_response_bytes:
                     raise AuditError(
                         f"{method} {url} returned more than {self.max_response_bytes} bytes"
@@ -543,6 +583,8 @@ class OsvClient:
                     raise AuditError(
                         f"{method} {url} returned JSON that is not an object"
                     )
+                if self._remaining() <= 0:
+                    raise AuditError("advisory response exceeded the deadline")
                 return decoded
             except urllib.error.HTTPError as exc:
                 last_error = f"HTTP {exc.code}"
@@ -585,11 +627,17 @@ class OsvClient:
                     raise AuditError(
                         f"OSV result for {pair[0]} {pair[1]} is paginated; refusing a partial audit"
                     )
-                result[pair] = sorted(
-                    str(v["id"])
-                    for v in item.get("vulns", [])
-                    if isinstance(v, dict) and "id" in v
-                )
+                vulnerabilities = item.get("vulns", [])
+                if not isinstance(vulnerabilities, list) or any(
+                    not isinstance(v, dict)
+                    or not isinstance(v.get("id"), str)
+                    or not re.fullmatch(r"[A-Za-z0-9._:-]+", v["id"])
+                    for v in vulnerabilities
+                ):
+                    raise AuditError(
+                        "OSV querybatch contains malformed advisory records"
+                    )
+                result[pair] = sorted(v["id"] for v in vulnerabilities)
         return result
 
     def vulnerability(self, advisory_id: str) -> Dict[str, Any]:
@@ -597,12 +645,63 @@ class OsvClient:
             raise AuditError(
                 f"refusing to fetch advisory with unexpected id {advisory_id!r}"
             )
-        return self._request("GET", f"/v1/vulns/{urllib.parse.quote(advisory_id)}")
+        data = self._request("GET", f"/v1/vulns/{urllib.parse.quote(advisory_id)}")
+        if data.get("id") != advisory_id:
+            raise AuditError("OSV advisory detail identity does not match the request")
+        _validate_advisory(data)
+        return data
 
 
 # --------------------------------------------------------------------------
 # Advisories and policy
 # --------------------------------------------------------------------------
+
+
+def _validate_advisory(data: Dict[str, Any]) -> None:
+    """Reject incomplete record shapes rather than silently dropping coverage."""
+    if not isinstance(data.get("id"), str) or not data["id"]:
+        raise AuditError("OSV advisory requires a nonempty ID")
+    for key in ("aliases", "affected"):
+        if key in data and not isinstance(data[key], list):
+            raise AuditError(f"OSV advisory {key} must be a list")
+    if any(
+        not isinstance(alias, str) or not alias for alias in data.get("aliases", [])
+    ):
+        raise AuditError("OSV advisory aliases must be nonempty strings")
+    for affected in data.get("affected", []):
+        if not isinstance(affected, dict) or not isinstance(
+            affected.get("package"), dict
+        ):
+            raise AuditError("OSV affected package is malformed")
+        package = affected["package"]
+        if not all(
+            isinstance(package.get(key), str) and package[key]
+            for key in ("name", "ecosystem")
+        ):
+            raise AuditError("OSV affected package identity is malformed")
+        ranges = affected.get("ranges", [])
+        if not isinstance(ranges, list):
+            raise AuditError("OSV affected ranges must be a list")
+        for item in ranges:
+            if not isinstance(item, dict) or not isinstance(item.get("events"), list):
+                raise AuditError("OSV affected range is malformed")
+            for event in item["events"]:
+                if (
+                    not isinstance(event, dict)
+                    or len(event) != 1
+                    or not all(
+                        key in ("introduced", "fixed", "last_affected", "limit")
+                        and isinstance(value, str)
+                        and value
+                        for key, value in event.items()
+                    )
+                ):
+                    raise AuditError("OSV range event is malformed")
+    for key in ("summary", "details", "withdrawn"):
+        if key in data and not isinstance(data[key], str):
+            raise AuditError(f"OSV advisory {key} must be a string")
+    if "database_specific" in data and not isinstance(data["database_specific"], dict):
+        raise AuditError("OSV database_specific must be an object")
 
 
 @dataclass
@@ -616,6 +715,7 @@ class Advisory:
 
     @classmethod
     def from_osv(cls, data: Dict[str, Any]) -> "Advisory":
+        _validate_advisory(data)
         fixed: Dict[str, List[str]] = {}
         for affected in data.get("affected", []) or []:
             package = canonicalize_name(

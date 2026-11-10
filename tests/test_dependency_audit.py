@@ -716,3 +716,102 @@ def test_repository_policy_exceptions_are_reviewed_and_dated(repo_graph: Any) ->
             assert exception.pythons == [
                 "3.9"
             ], "only Python 3.9 compatibility gaps may use this class"
+
+
+@pytest.mark.parametrize(
+    "members", [[{"summary": "bad"}], [None], {}, [{"id": "GHSA-valid"}, {}]]
+)
+def test_malformed_advisory_members_fail_cli(
+    project: Path, monkeypatch: Any, members: Any
+) -> None:
+    def response(_self: Any, _method: str, _path: str, payload: Any = None) -> Any:
+        return {"results": [{"vulns": members} for _ in payload["queries"]]}
+
+    monkeypatch.setattr(audit.OsvClient, "_request", response)
+    assert _run(project, "http://127.0.0.1:1") == audit.EXIT_INCOMPLETE
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [("affected", {}), ("aliases", [None]), ("affected", [{}]), ("summary", [])],
+)
+def test_malformed_advisory_detail_is_refused(field: str, value: Any) -> None:
+    with pytest.raises(audit.AuditError):
+        audit.Advisory.from_osv({"id": "GHSA-valid", field: value})
+
+
+def test_parent_extra_marker_reaches_blocking_child() -> None:
+    child = audit.DependencySpec(
+        "child", "*", markers='extra == "feature"', optional=True
+    )
+    packages = {
+        "parent": [
+            audit.LockedPackage(
+                "parent", "1.0", "*", {"child": [child]}, {"feature": ["child"]}
+            )
+        ],
+        "child": [audit.LockedPackage("child", "1.0", "*", {}, {})],
+    }
+    graph = audit.build_graph(
+        {"runtime": [audit.DependencySpec("parent", "*", extras=("feature",))]},
+        packages,
+        ["3.12"],
+        ["linux"],
+    )
+    assert graph.reach[("child", "1.0")].scopes == {"runtime"}
+
+
+def test_repository_selected_extra_paths_are_reached(repo_graph: Any) -> None:
+    _, graph = repo_graph
+    reached = {name for name, _ in graph.reach}
+    assert {"email-validator", "dnspython", "mkdocstrings-python"} <= reached
+
+
+def test_unsupported_platform_selector_fails_closed() -> None:
+    with pytest.raises(audit.AuditError, match="platform selector"):
+        audit._parse_dependency_specs("example", {"version": "*", "platform": "win32"})
+
+
+def test_current_transport_exceptions_do_not_cover_new_scopes(repo_graph: Any) -> None:
+    policy, _ = repo_graph
+    for exception in policy.exceptions:
+        if exception.package in ("urllib3", "requests"):
+            assert exception.scopes
+            assert "extra:new-service" not in exception.scopes
+
+
+def test_slow_body_stops_at_remaining_deadline() -> None:
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *args: Any) -> None:
+            pass
+
+        def do_GET(self) -> None:  # noqa: N802
+            self.send_response(200)
+            self.send_header("Content-Length", "16")
+            self.end_headers()
+            try:
+                for byte in b'{"value": true }':
+                    self.wfile.write(bytes([byte]))
+                    self.wfile.flush()
+                    time.sleep(0.08)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        client = audit.OsvClient(
+            base_url=f"http://127.0.0.1:{server.server_port}",
+            deadline=0.2,
+            timeout=0.15,
+            retries=0,
+        )
+        started = time.monotonic()
+        with pytest.raises(audit.AuditError):
+            client._request("GET", "/")
+        assert time.monotonic() - started < 0.7
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
