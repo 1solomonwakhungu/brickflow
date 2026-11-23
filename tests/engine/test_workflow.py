@@ -471,8 +471,8 @@ class TestWorkflow:
 
         wf_c = Workflow("wf_c", clusters=[cluster])
 
-        assert wf_b.permissions.can_view == []
-        assert wf_b.permissions.can_manage == []
-        assert wf_b.permissions.can_manage_run == []
-        assert wf_b.permissions.to_access_controls() == []
-        assert wf_c.permissions.to_access_controls() == []
+        assert not wf_b.permissions.can_view
+        assert not wf_b.permissions.can_manage
+        assert not wf_b.permissions.can_manage_run
+        assert not wf_b.permissions.to_access_controls()
+        assert not wf_c.permissions.to_access_controls()
